@@ -17,6 +17,7 @@ import ccxt
 from scipy.signal import argrelextrema
 import threading
 import json
+import urllib.request
 import bingx as bx
 
 # ─── TRADUCCIONES ─────────────────────────────────────────────────────────────
@@ -236,8 +237,9 @@ SYMBOL_MAP = {
     "ARB":  "ARB/USDT",
 }
 
-# Checklist: top 19 sin BTC (BTC siempre está en el gráfico principal)
+# Checklist: top 20 incluyendo BTC
 ACTIVOS_GRID = [
+    ("BTC",  "BTC/USDT"),
     ("ETH",  "ETH/USDT"),  ("BNB",  "BNB/USDT"),  ("XRP",  "XRP/USDT"),
     ("SOL",  "SOL/USDT"),  ("TRX",  "TRX/USDT"),  ("DOGE", "DOGE/USDT"),
     ("ADA",  "ADA/USDT"),  ("BCH",  "BCH/USDT"),  ("LINK", "LINK/USDT"),
@@ -471,17 +473,18 @@ def crear_grafico(df, activo="BTC", compacto=False):
         name=f"ADX  {adx_val:.1f}", showlegend=True), row=3, col=1)
     fig.add_hline(y=23, line_dash="dash", line_color="#FFD700", line_width=1.2, row=3, col=1)
 
-    ax = dict(gridcolor="#1a1a28", color="#6b6b80", showspikes=True,
-              spikecolor="#555", spikethickness=1, spikedash="dot")
+    ax  = dict(gridcolor="#1a1a28", color="#6b6b80", showspikes=True,
+               spikecolor="#555", spikethickness=1, spikedash="dot", fixedrange=False)
+    yax = dict(**ax, side="right")
     fig.update_layout(
         template="plotly_dark", paper_bgcolor="#0a0a0f", plot_bgcolor="#0a0a0f",
         margin=dict(l=5, r=65, t=8, b=8),
         legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#a0a8c0", size=11),
                     orientation="h", x=0, y=1.02),
         hovermode="x unified", xaxis_rangeslider_visible=False,
-        xaxis=dict(**ax), xaxis2=dict(**ax), xaxis3=dict(**ax),
-        yaxis=dict(**ax, side="right"), yaxis2=dict(**ax, side="right"),
-        yaxis3=dict(**ax, side="right"),
+        dragmode="pan",          # arrastrar = mover (como TradingView)
+        xaxis=dict(**ax),  xaxis2=dict(**ax),  xaxis3=dict(**ax),
+        yaxis=yax,         yaxis2=yax,         yaxis3=yax,
     )
     return fig
 
@@ -535,6 +538,32 @@ def crear_mini_grafico(df_dict):
     return fig, rows
 
 
+# ─── TELEGRAM ─────────────────────────────────────────────────────────────────
+
+def _enviar_telegram(mensaje):
+    """Envía un mensaje via Telegram Bot API. Silencioso si no está configurado."""
+    try:
+        with open("config.json") as f:
+            cfg = json.load(f)
+        token   = cfg.get("telegram_token")
+        chat_id = cfg.get("telegram_chatid")
+        if not token or not chat_id:
+            return
+        url  = f"https://api.telegram.org/bot{token}/sendMessage"
+        data = json.dumps({
+            "chat_id":    str(chat_id),
+            "text":       mensaje,
+            "parse_mode": "HTML",
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data,
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=6)
+    except Exception:
+        pass  # Nunca interrumpir el bot por fallo de Telegram
+
+
 # ─── BOT LOOP ─────────────────────────────────────────────────────────────────
 
 def _bot_loop(activos_lista, tf, capital_pct):
@@ -564,25 +593,55 @@ def _bot_loop(activos_lista, tf, capital_pct):
                 pos_actual = posicion.get(activo)
                 accion     = None
 
+                precio = float(df.iloc[-1]["close"])
+
                 if score >= 70 and pos_actual != "long":
                     if pos_actual == "short":
                         bx.cerrar_posicion(simbolo, "short")
+                        _enviar_telegram(
+                            f"🔄 <b>CIERRE SHORT → LONG</b>\n"
+                            f"Par: <b>{simbolo}</b>  |  Precio: <b>${precio:,.2f}</b>"
+                        )
                     with _bot_lock:
                         bal_v = _bot_status["balance"] or 0
                     capital = bal_v * (capital_pct / 100) if bal_v else 10
                     bx.colocar_orden(simbolo, "long", capital, apalancamiento, modo)
                     posicion[activo] = "long"
                     accion = f"▲ LONG  score={score}"
+                    _enviar_telegram(
+                        f"🟢 <b>ENTRADA LONG</b>\n"
+                        f"━━━━━━━━━━━━━━━━\n"
+                        f"Par:      <b>{simbolo}</b>\n"
+                        f"Precio:   <b>${precio:,.2f}</b>\n"
+                        f"Score:    <b>{score:+d}</b>\n"
+                        f"Capital:  <b>${capital:.2f} USDT</b>\n"
+                        f"Apalancamiento: <b>x{apalancamiento}</b>\n"
+                        f"Modo:     <b>{modo.upper()}</b>"
+                    )
 
                 elif score <= -70 and pos_actual != "short":
                     if pos_actual == "long":
                         bx.cerrar_posicion(simbolo, "long")
+                        _enviar_telegram(
+                            f"🔄 <b>CIERRE LONG → SHORT</b>\n"
+                            f"Par: <b>{simbolo}</b>  |  Precio: <b>${precio:,.2f}</b>"
+                        )
                     with _bot_lock:
                         bal_v = _bot_status["balance"] or 0
                     capital = bal_v * (capital_pct / 100) if bal_v else 10
                     bx.colocar_orden(simbolo, "short", capital, apalancamiento, modo)
                     posicion[activo] = "short"
                     accion = f"▼ SHORT score={score}"
+                    _enviar_telegram(
+                        f"🔴 <b>ENTRADA SHORT</b>\n"
+                        f"━━━━━━━━━━━━━━━━\n"
+                        f"Par:      <b>{simbolo}</b>\n"
+                        f"Precio:   <b>${precio:,.2f}</b>\n"
+                        f"Score:    <b>{score:+d}</b>\n"
+                        f"Capital:  <b>${capital:.2f} USDT</b>\n"
+                        f"Apalancamiento: <b>x{apalancamiento}</b>\n"
+                        f"Modo:     <b>{modo.upper()}</b>"
+                    )
 
                 if accion:
                     ts  = datetime.now().strftime("%H:%M:%S")
@@ -697,7 +756,8 @@ def _pagina_principal():
                 html.Div(className="grafico-wrap", children=[
                     dcc.Loading(type="dot", color="#c8a84b", children=[
                         dcc.Graph(id="grafico-principal",
-                                  config={"displayModeBar": False, "scrollZoom": True},
+                                  config={"displayModeBar": "hover", "scrollZoom": True, "displaylogo": False,
+                                  "modeBarButtonsToRemove": ["select2d","lasso2d","toImage","sendDataToCloud"]},
                                   style={"height": "100%"}),
                     ]),
                 ]),
@@ -845,7 +905,8 @@ def _pagina_detalle(symbol):
         dcc.Interval(id="detail-tick", interval=30_000, n_intervals=0),
         dcc.Loading(type="dot", color="#c8a84b", children=[
             dcc.Graph(id="detail-graph",
-                      config={"displayModeBar": False, "scrollZoom": True},
+                      config={"displayModeBar": "hover", "scrollZoom": True, "displaylogo": False,
+                                  "modeBarButtonsToRemove": ["select2d","lasso2d","toImage","sendDataToCloud"]},
                       style={"height": "calc(100vh - 290px)"}),
         ]),
         html.Div(className="detail-bottom", children=[
@@ -1112,7 +1173,8 @@ def cb_asset_grid(activos, tf, _):
     return html.Div(className="asset-grid-outer", children=[
         html.Div(className="grid-links-row", children=links),
         dcc.Graph(figure=fig,
-                  config={"displayModeBar": False, "scrollZoom": True},
+                  config={"displayModeBar": "hover", "scrollZoom": True, "displaylogo": False,
+                                  "modeBarButtonsToRemove": ["select2d","lasso2d","toImage","sendDataToCloud"]},
                   style={"height": f"{altura}px"}),
     ])
 
@@ -1184,21 +1246,36 @@ def cb_detail(_, tf, pathname):
 
 
 @app.callback(
-    [Output("bot-balance-val", "children"),
-     Output("bot-log",         "children")],
+    [Output("bot-balance-val",  "children"),
+     Output("bot-log",          "children"),
+     Output("telegram-estado",  "children"),
+     Output("telegram-estado",  "style")],
     Input("tick-bot-status", "n_intervals"),
 )
 def cb_bot_status(_):
     with _bot_lock:
         bal = _bot_status["balance"]
         log = list(_bot_status["log"])
+
     bal_txt   = f"${bal:,.2f}" if isinstance(bal, float) else "–"
     log_items = [
         html.Div(msg, style={"borderBottom": "1px solid #1a1a28", "paddingBottom": "1px",
                               "marginBottom": "1px"})
         for msg in log[:5]
     ] if log else [html.Div("Sin actividad", style={"color": "#3a3a50"})]
-    return bal_txt, log_items
+
+    # Estado Telegram
+    try:
+        with open("config.json") as f:
+            cfg = json.load(f)
+        tg_ok = bool(cfg.get("telegram_token") and cfg.get("telegram_chatid"))
+    except Exception:
+        tg_ok = False
+    tg_txt   = "✅ Conectado" if tg_ok else "⚠ No configurado"
+    tg_style = {"color": "#00ff88", "fontSize": "12px"} if tg_ok else \
+               {"color": "#f0c040", "fontSize": "12px"}
+
+    return bal_txt, log_items, tg_txt, tg_style
 
 
 if __name__ == "__main__":
