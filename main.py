@@ -574,7 +574,44 @@ def _bot_loop(activos_lista, tf, capital_pct):
         cfg = {}
     modo           = cfg.get("modo", "demo")
     apalancamiento = cfg.get("apalancamiento", 10)
-    posicion       = {a: None for a in activos_lista}
+    ts_activacion  = float(cfg.get("trailing_activacion", 3.0))   # % ganancia para activar
+    ts_distancia   = float(cfg.get("trailing_distancia",  1.5))   # % retroceso para cerrar
+
+    # Tracking por activo
+    posicion        = {a: None  for a in activos_lista}
+    precio_entrada  = {a: None  for a in activos_lista}
+    precio_extremo  = {a: None  for a in activos_lista}  # max (long) / min (short)
+    trailing_activo = {a: False for a in activos_lista}
+
+    # ── PRIORIDAD 3: Detectar posiciones abiertas en BingX al arrancar ──────────
+    if modo == "real":
+        try:
+            ex = ccxt.bingx({
+                "apiKey": cfg.get("api_key", ""), "secret": cfg.get("api_secret", ""),
+                "enableRateLimit": True,
+            })
+            for p in (ex.fetch_positions() or []):
+                if abs(float(p.get("contracts") or 0)) == 0:
+                    continue
+                for a in activos_lista:
+                    sym = SYMBOL_MAP.get(a, f"{a}/USDT") + ":USDT"
+                    if p.get("symbol") == sym and p.get("side") in ("long", "short"):
+                        posicion[a]       = p["side"]
+                        precio_entrada[a] = float(p.get("entryPrice") or 0)
+                        precio_extremo[a] = precio_entrada[a]
+                        msg = f"Posicion previa: {a} {p['side'].upper()} @ ${precio_entrada[a]:,.2f}"
+                        with _bot_lock:
+                            _bot_status["log"].insert(0, msg)
+                        _enviar_telegram(f"⚡ <b>Posición previa detectada</b>\nPar: <b>{a}</b> | {p['side'].upper()} @ <b>${precio_entrada[a]:,.2f}</b>")
+        except Exception:
+            pass
+
+    def _registrar(activo, accion, posicion_nueva):
+        ts = datetime.now().strftime("%H:%M:%S")
+        with _bot_lock:
+            _bot_status["posicion"][activo] = posicion_nueva
+            _bot_status["log"].insert(0, f"[{ts}] {activo}: {accion}")
+            _bot_status["log"] = _bot_status["log"][:8]
 
     while not _bot_stop.is_set():
         bal = bx.verificar_balance()
@@ -588,68 +625,117 @@ def _bot_loop(activos_lista, tf, capital_pct):
                 df = obtener_datos(activo, tf, velas=200)
                 if df is None or df.empty:
                     continue
-                score, _  = calcular_score(df)
+                score, _   = calcular_score(df)
                 simbolo    = SYMBOL_MAP.get(activo, f"{activo}/USDT")
-                pos_actual = posicion.get(activo)
-                accion     = None
+                pos_actual = posicion[activo]
+                precio     = float(df.iloc[-1]["close"])
 
-                precio = float(df.iloc[-1]["close"])
+                # ── PRIORIDAD 2: TRAILING STOP ───────────────────────────────
+                if pos_actual and precio_entrada[activo]:
+                    ep = precio_entrada[activo]
+
+                    if pos_actual == "long":
+                        if precio > (precio_extremo[activo] or precio):
+                            precio_extremo[activo] = precio
+                        profit_pct = (precio - ep) / ep * 100
+                        if profit_pct >= ts_activacion:
+                            trailing_activo[activo] = True
+                        if trailing_activo[activo]:
+                            retroceso = (precio_extremo[activo] - precio) / precio_extremo[activo] * 100
+                            if retroceso >= ts_distancia:
+                                bx.cerrar_posicion(simbolo, "long")
+                                _enviar_telegram(
+                                    f"🛑 <b>TRAILING STOP — LONG</b>\n"
+                                    f"Par: <b>{simbolo}</b>\n"
+                                    f"Entrada: <b>${ep:,.2f}</b>  Cierre: <b>${precio:,.2f}</b>\n"
+                                    f"Ganancia aprox: <b>+{profit_pct:.2f}%</b>"
+                                )
+                                accion = f"Trailing Stop LONG +{profit_pct:.1f}%"
+                                posicion[activo] = precio_entrada[activo] = precio_extremo[activo] = None
+                                trailing_activo[activo] = False
+                                _registrar(activo, accion, None)
+                                continue
+
+                    elif pos_actual == "short":
+                        if precio < (precio_extremo[activo] or precio):
+                            precio_extremo[activo] = precio
+                        profit_pct = (ep - precio) / ep * 100
+                        if profit_pct >= ts_activacion:
+                            trailing_activo[activo] = True
+                        if trailing_activo[activo]:
+                            retroceso = (precio - precio_extremo[activo]) / precio_extremo[activo] * 100
+                            if retroceso >= ts_distancia:
+                                bx.cerrar_posicion(simbolo, "short")
+                                _enviar_telegram(
+                                    f"🛑 <b>TRAILING STOP — SHORT</b>\n"
+                                    f"Par: <b>{simbolo}</b>\n"
+                                    f"Entrada: <b>${ep:,.2f}</b>  Cierre: <b>${precio:,.2f}</b>\n"
+                                    f"Ganancia aprox: <b>+{profit_pct:.2f}%</b>"
+                                )
+                                accion = f"Trailing Stop SHORT +{profit_pct:.1f}%"
+                                posicion[activo] = precio_entrada[activo] = precio_extremo[activo] = None
+                                trailing_activo[activo] = False
+                                _registrar(activo, accion, None)
+                                continue
+
+                # ── PRIORIDAD 1: CERRAR SI SCORE VUELVE A ZONA WAIT ─────────
+                pos_actual = posicion[activo]
+                if pos_actual and -70 < score < 70:
+                    ep  = precio_entrada.get(activo) or precio
+                    pnl = ((precio - ep) / ep * 100) if pos_actual == "long" else ((ep - precio) / ep * 100)
+                    sgn = "+" if pnl >= 0 else ""
+                    bx.cerrar_posicion(simbolo, pos_actual)
+                    _enviar_telegram(
+                        f"⬜ <b>CIERRE — ZONA NEUTRAL</b>\n"
+                        f"Par: <b>{simbolo}</b> | {pos_actual.upper()}\n"
+                        f"Precio cierre: <b>${precio:,.2f}</b>\n"
+                        f"P&L estimado: <b>{sgn}{pnl:.2f}%</b> | Score: <b>{score:+d}</b>"
+                    )
+                    accion = f"Cierre WAIT score={score} P&L={sgn}{pnl:.1f}%"
+                    posicion[activo] = precio_entrada[activo] = precio_extremo[activo] = None
+                    trailing_activo[activo] = False
+                    _registrar(activo, accion, None)
+                    continue
+
+                # ── SEÑALES DE ENTRADA ───────────────────────────────────────
+                pos_actual = posicion[activo]
+                with _bot_lock:
+                    bal_v = _bot_status["balance"] or 0
+                capital = bal_v * (capital_pct / 100) if bal_v else 10
 
                 if score >= 70 and pos_actual != "long":
                     if pos_actual == "short":
                         bx.cerrar_posicion(simbolo, "short")
-                        _enviar_telegram(
-                            f"🔄 <b>CIERRE SHORT → LONG</b>\n"
-                            f"Par: <b>{simbolo}</b>  |  Precio: <b>${precio:,.2f}</b>"
-                        )
-                    with _bot_lock:
-                        bal_v = _bot_status["balance"] or 0
-                    capital = bal_v * (capital_pct / 100) if bal_v else 10
+                        _enviar_telegram(f"🔄 <b>CIERRE SHORT → LONG</b>\nPar: <b>{simbolo}</b>  |  Precio: <b>${precio:,.2f}</b>")
                     bx.colocar_orden(simbolo, "long", capital, apalancamiento, modo)
-                    posicion[activo] = "long"
-                    accion = f"▲ LONG  score={score}"
+                    posicion[activo]       = "long"
+                    precio_entrada[activo] = precio
+                    precio_extremo[activo] = precio
+                    trailing_activo[activo]= False
                     _enviar_telegram(
-                        f"🟢 <b>ENTRADA LONG</b>\n"
-                        f"━━━━━━━━━━━━━━━━\n"
-                        f"Par:      <b>{simbolo}</b>\n"
-                        f"Precio:   <b>${precio:,.2f}</b>\n"
-                        f"Score:    <b>{score:+d}</b>\n"
-                        f"Capital:  <b>${capital:.2f} USDT</b>\n"
-                        f"Apalancamiento: <b>x{apalancamiento}</b>\n"
-                        f"Modo:     <b>{modo.upper()}</b>"
+                        f"🟢 <b>ENTRADA LONG</b>\n━━━━━━━━━━━━━━━━\n"
+                        f"Par: <b>{simbolo}</b>\nPrecio: <b>${precio:,.2f}</b>\n"
+                        f"Score: <b>{score:+d}</b>\nCapital: <b>${capital:.2f} USDT</b>\n"
+                        f"Apalancamiento: <b>x{apalancamiento}</b>\nModo: <b>{modo.upper()}</b>"
                     )
+                    _registrar(activo, f"LONG score={score}", "long")
 
                 elif score <= -70 and pos_actual != "short":
                     if pos_actual == "long":
                         bx.cerrar_posicion(simbolo, "long")
-                        _enviar_telegram(
-                            f"🔄 <b>CIERRE LONG → SHORT</b>\n"
-                            f"Par: <b>{simbolo}</b>  |  Precio: <b>${precio:,.2f}</b>"
-                        )
-                    with _bot_lock:
-                        bal_v = _bot_status["balance"] or 0
-                    capital = bal_v * (capital_pct / 100) if bal_v else 10
+                        _enviar_telegram(f"🔄 <b>CIERRE LONG → SHORT</b>\nPar: <b>{simbolo}</b>  |  Precio: <b>${precio:,.2f}</b>")
                     bx.colocar_orden(simbolo, "short", capital, apalancamiento, modo)
-                    posicion[activo] = "short"
-                    accion = f"▼ SHORT score={score}"
+                    posicion[activo]       = "short"
+                    precio_entrada[activo] = precio
+                    precio_extremo[activo] = precio
+                    trailing_activo[activo]= False
                     _enviar_telegram(
-                        f"🔴 <b>ENTRADA SHORT</b>\n"
-                        f"━━━━━━━━━━━━━━━━\n"
-                        f"Par:      <b>{simbolo}</b>\n"
-                        f"Precio:   <b>${precio:,.2f}</b>\n"
-                        f"Score:    <b>{score:+d}</b>\n"
-                        f"Capital:  <b>${capital:.2f} USDT</b>\n"
-                        f"Apalancamiento: <b>x{apalancamiento}</b>\n"
-                        f"Modo:     <b>{modo.upper()}</b>"
+                        f"🔴 <b>ENTRADA SHORT</b>\n━━━━━━━━━━━━━━━━\n"
+                        f"Par: <b>{simbolo}</b>\nPrecio: <b>${precio:,.2f}</b>\n"
+                        f"Score: <b>{score:+d}</b>\nCapital: <b>${capital:.2f} USDT</b>\n"
+                        f"Apalancamiento: <b>x{apalancamiento}</b>\nModo: <b>{modo.upper()}</b>"
                     )
-
-                if accion:
-                    ts  = datetime.now().strftime("%H:%M:%S")
-                    msg = f"[{ts}] {activo}: {accion}"
-                    with _bot_lock:
-                        _bot_status["posicion"][activo] = posicion[activo]
-                        _bot_status["log"].insert(0, msg)
-                        _bot_status["log"] = _bot_status["log"][:8]
+                    _registrar(activo, f"SHORT score={score}", "short")
 
             except Exception as e:
                 ts = datetime.now().strftime("%H:%M:%S")
