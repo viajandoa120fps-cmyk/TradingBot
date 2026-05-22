@@ -10,8 +10,8 @@
     "ema_lenta": 55,
     "adx_keylevel": 23,
     "modo": "demo",
-    "api_key": null,
-    "api_secret": null,
+    "api_key": "vXx9kSWExAvdPMfUKKc7TfmeDJczN5iOoan6codJObOePWQ67KP5rgJIUWvEt1Ht0jwS2OBSFfL0E88FUbuTg",
+    "api_secret": "td2uPRf2fYpBooVJUJkkGw2NxkVIF8n9rOebunMTBdU1ZnD6cr0F8F9WQj5CDRXSrSYhzgop6AxE1jNUeA",
     "telegram_token": null,
     "telegram_chatid": null,
     "language": "es"

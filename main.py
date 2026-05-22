@@ -15,6 +15,9 @@ import random
 import time
 import ccxt
 from scipy.signal import argrelextrema
+import threading
+import json
+import bingx as bx
 
 # ─── TRADUCCIONES ─────────────────────────────────────────────────────────────
 
@@ -248,43 +251,78 @@ TF_MAP = {
     "1W": "1w", "1D": "1d", "4H": "4h", "1H": "1h", "15m": "15m",
 }
 
+# ─── BOT GLOBAL STATE ─────────────────────────────────────────────────────────
+
+_bot_thread = None
+_bot_stop   = threading.Event()
+_bot_lock   = threading.Lock()
+_bot_status = {"balance": None, "posicion": {}, "log": []}
+
 
 # ─── DATOS E INDICADORES ──────────────────────────────────────────────────────
 
 def obtener_datos(activo="BTC", temporalidad="4H", velas=200):
     simbolo = SYMBOL_MAP.get(activo, "BTC/USDT")
     tf      = TF_MAP.get(temporalidad, "4h")
+    raw     = None
+    # Prefer BingX perpetual (matches TradingView BingX charts exactly)
     try:
-        ex  = ccxt.binance({"enableRateLimit": False})
-        raw = ex.fetch_ohlcv(simbolo, tf, limit=velas)
+        ex  = ccxt.bingx({"enableRateLimit": True})
+        raw = ex.fetch_ohlcv(simbolo + ":USDT", tf, limit=velas + 300)
     except Exception:
-        return None
+        pass
+    # Fallback: Binance spot
+    if not raw:
+        try:
+            ex  = ccxt.binance({"enableRateLimit": False})
+            raw = ex.fetch_ohlcv(simbolo, tf, limit=velas + 300)
+        except Exception:
+            return None
     df = pd.DataFrame(raw, columns=["tiempo", "open", "high", "low", "close", "volumen"])
     df["tiempo"] = pd.to_datetime(df["tiempo"], unit="ms")
 
+    # EMA — warmup converges with 300 extra bars (matches TradingView)
     df["EMA10"] = df["close"].ewm(span=10, adjust=False).mean()
     df["EMA55"] = df["close"].ewm(span=55, adjust=False).mean()
 
+    # Squeeze Momentum (LazyBear — exact TradingView formula)
     bl, bm, kl, km = 20, 2.0, 20, 1.5
+
     df["BB_mid"] = df["close"].rolling(bl).mean()
     df["BB_std"] = df["close"].rolling(bl).std()
     df["BB_u"]   = df["BB_mid"] + bm * df["BB_std"]
     df["BB_l"]   = df["BB_mid"] - bm * df["BB_std"]
+
     tr = pd.concat([
         df["high"] - df["low"],
         (df["high"] - df["close"].shift()).abs(),
         (df["low"]  - df["close"].shift()).abs(),
     ], axis=1).max(axis=1)
-    df["KC_mid"]  = df["close"].rolling(kl).mean()
-    df["KC_r"]    = tr.rolling(kl).mean()
-    df["KC_u"]    = df["KC_mid"] + km * df["KC_r"]
-    df["KC_l"]    = df["KC_mid"] - km * df["KC_r"]
-    df["squeeze"] = (df["BB_l"] > df["KC_l"]) & (df["BB_u"] < df["KC_u"])
-    highest = df["high"].rolling(kl).max()
-    lowest  = df["low"].rolling(kl).min()
-    df["momentum"] = df["close"] - ((highest + lowest) / 2 + df["KC_mid"]) / 2
-    df["momentum"] = df["momentum"].rolling(kl).mean()
 
+    # KC: midline = EMA(close), range = SMA(TR) — fórmula exacta LazyBear v4_pine
+    df["KC_mid"] = df["close"].ewm(span=kl, adjust=False).mean()
+    df["KC_r"]   = tr.rolling(kl).mean()
+    df["KC_u"]   = df["KC_mid"] + km * df["KC_r"]
+    df["KC_l"]   = df["KC_mid"] - km * df["KC_r"]
+    df["squeeze"] = (df["BB_l"] > df["KC_l"]) & (df["BB_u"] < df["KC_u"])
+
+    # Momentum: linreg(close - avg(avg(high_max, low_min), sma_close), kl, 0)
+    sma_close = df["close"].rolling(kl).mean()
+    highest   = df["high"].rolling(kl).max()
+    lowest    = df["low"].rolling(kl).min()
+    delta     = df["close"] - ((highest + lowest) / 2 + sma_close) / 2
+
+    _x     = np.arange(kl, dtype=float) - (kl - 1) / 2  # centered x
+    _x_var = (_x ** 2).sum()
+    _x_end = _x[-1]
+
+    def _linreg_last(y):
+        slope = (_x * (y - y.mean())).sum() / _x_var
+        return y.mean() + slope * _x_end
+
+    df["momentum"] = delta.rolling(kl).apply(_linreg_last, raw=True)
+
+    # ADX (Wilder smoothing — matches TradingView DMI)
     ln, a = 14, 1 / 14
     tr14 = pd.concat([
         df["high"] - df["low"],
@@ -300,7 +338,9 @@ def obtener_datos(activo="BTC", temporalidad="4H", velas=200):
     df["DI_m"] = 100 * dm_m.ewm(alpha=a, adjust=False).mean() / tr14s
     dx         = 100 * (df["DI_p"] - df["DI_m"]).abs() / (df["DI_p"] + df["DI_m"])
     df["ADX"]  = dx.ewm(alpha=a, adjust=False).mean()
-    return df
+
+    # Return only the requested candles (warmup discarded)
+    return df.tail(velas).reset_index(drop=True)
 
 
 def _volume_profile(df, bins=90):
@@ -493,6 +533,72 @@ def crear_mini_grafico(df_dict):
         margin=dict(l=5, r=50, t=32, b=5), showlegend=False,
     )
     return fig, rows
+
+
+# ─── BOT LOOP ─────────────────────────────────────────────────────────────────
+
+def _bot_loop(activos_lista, tf, capital_pct):
+    try:
+        with open("config.json") as f:
+            cfg = json.load(f)
+    except Exception:
+        cfg = {}
+    modo           = cfg.get("modo", "demo")
+    apalancamiento = cfg.get("apalancamiento", 10)
+    posicion       = {a: None for a in activos_lista}
+
+    while not _bot_stop.is_set():
+        bal = bx.verificar_balance()
+        with _bot_lock:
+            _bot_status["balance"] = bal if not isinstance(bal, tuple) else None
+
+        for activo in activos_lista:
+            if _bot_stop.is_set():
+                break
+            try:
+                df = obtener_datos(activo, tf, velas=200)
+                if df is None or df.empty:
+                    continue
+                score, _  = calcular_score(df)
+                simbolo    = SYMBOL_MAP.get(activo, f"{activo}/USDT")
+                pos_actual = posicion.get(activo)
+                accion     = None
+
+                if score >= 70 and pos_actual != "long":
+                    if pos_actual == "short":
+                        bx.cerrar_posicion(simbolo, "short")
+                    with _bot_lock:
+                        bal_v = _bot_status["balance"] or 0
+                    capital = bal_v * (capital_pct / 100) if bal_v else 10
+                    bx.colocar_orden(simbolo, "long", capital, apalancamiento, modo)
+                    posicion[activo] = "long"
+                    accion = f"▲ LONG  score={score}"
+
+                elif score <= -70 and pos_actual != "short":
+                    if pos_actual == "long":
+                        bx.cerrar_posicion(simbolo, "long")
+                    with _bot_lock:
+                        bal_v = _bot_status["balance"] or 0
+                    capital = bal_v * (capital_pct / 100) if bal_v else 10
+                    bx.colocar_orden(simbolo, "short", capital, apalancamiento, modo)
+                    posicion[activo] = "short"
+                    accion = f"▼ SHORT score={score}"
+
+                if accion:
+                    ts  = datetime.now().strftime("%H:%M:%S")
+                    msg = f"[{ts}] {activo}: {accion}"
+                    with _bot_lock:
+                        _bot_status["posicion"][activo] = posicion[activo]
+                        _bot_status["log"].insert(0, msg)
+                        _bot_status["log"] = _bot_status["log"][:8]
+
+            except Exception as e:
+                ts = datetime.now().strftime("%H:%M:%S")
+                with _bot_lock:
+                    _bot_status["log"].insert(0, f"[{ts}] ERROR {activo}: {e}")
+                    _bot_status["log"] = _bot_status["log"][:8]
+
+        _bot_stop.wait(timeout=30)
 
 
 # ─── APP ──────────────────────────────────────────────────────────────────────
@@ -700,6 +806,19 @@ def _pagina_principal():
                                   style={"color": "#a0a8c0", "fontSize": "12px"}),
                     ]),
                 ]),
+                html.Div(className="separador-dorado"),
+                html.Div(className="seccion-control", children=[
+                    html.Div(className="seccion-titulo", children="Balance BingX"),
+                    html.Div(className="stat-fila", children=[
+                        html.Span("USDT", className="stat-nombre"),
+                        html.Span("–", id="bot-balance-val", className="stat-valor"),
+                    ]),
+                ]),
+                html.Div(id="bot-log", style={
+                    "marginTop": "6px", "fontSize": "10px",
+                    "color": "#6b5520", "lineHeight": "1.7",
+                    "fontFamily": "monospace",
+                }),
             ]),
         ]),
 
@@ -749,8 +868,9 @@ app.layout = html.Div([
     dcc.Store(id="store-idioma", data="es"),
     dcc.Store(id="store-bot",    data=False),
     dcc.Store(id="store-tf",     data="4H"),
-    dcc.Interval(id="tick-relojes", interval=1_000,  n_intervals=0),
-    dcc.Interval(id="tick-main",    interval=30_000, n_intervals=0),
+    dcc.Interval(id="tick-relojes",     interval=1_000,  n_intervals=0),
+    dcc.Interval(id="tick-main",        interval=30_000, n_intervals=0),
+    dcc.Interval(id="tick-bot-status",  interval=5_000,  n_intervals=0),
 
     html.Div(id="header-main", children=[
         html.Div(className="logo-area", children=[
@@ -829,17 +949,30 @@ def cb_capital(v): return f"{v}%"
     [Output("btn-bot",   "children"), Output("btn-bot",   "className"),
      Output("led-dot",   "className"), Output("led-txt",   "children"),
      Output("store-bot", "data")],
-    Input("btn-bot",      "n_clicks"),
-    State("store-bot",    "data"),
-    State("store-idioma", "data"),
+    Input("btn-bot",           "n_clicks"),
+    State("store-bot",         "data"),
+    State("store-idioma",      "data"),
+    State("checklist-activos", "value"),
+    State("store-tf",          "data"),
+    State("slider-capital",    "value"),
 )
-def cb_bot(n, activo, idioma):
+def cb_bot(n, activo, idioma, activos_sel, tf, capital_pct):
+    global _bot_thread, _bot_stop
     t = TRANSLATIONS.get(idioma, TRANSLATIONS["es"])
     if not n:
         return t["start"], "btn-principal", "led-dot desconectado", t["disconnected"], False
     nuevo = not activo
     if nuevo:
+        activos_lista = ["BTC"] + [a for a in (activos_sel or []) if a != "BTC"]
+        _bot_stop.clear()
+        _bot_thread = threading.Thread(
+            target=_bot_loop,
+            args=(activos_lista, tf or "4H", capital_pct or 20),
+            daemon=True,
+        )
+        _bot_thread.start()
         return t["stop"], "btn-principal stop", "led-dot", t["connected"], True
+    _bot_stop.set()
     return t["start"], "btn-principal", "led-dot desconectado", t["disconnected"], False
 
 
@@ -1050,9 +1183,27 @@ def cb_detail(_, tf, pathname):
     )
 
 
+@app.callback(
+    [Output("bot-balance-val", "children"),
+     Output("bot-log",         "children")],
+    Input("tick-bot-status", "n_intervals"),
+)
+def cb_bot_status(_):
+    with _bot_lock:
+        bal = _bot_status["balance"]
+        log = list(_bot_status["log"])
+    bal_txt   = f"${bal:,.2f}" if isinstance(bal, float) else "–"
+    log_items = [
+        html.Div(msg, style={"borderBottom": "1px solid #1a1a28", "paddingBottom": "1px",
+                              "marginBottom": "1px"})
+        for msg in log[:5]
+    ] if log else [html.Div("Sin actividad", style={"color": "#3a3a50"})]
+    return bal_txt, log_items
+
+
 if __name__ == "__main__":
     print("=" * 50)
     print("  AERO BOT PRO  —  Elite v2.0")
     print("  http://localhost:8051")
     print("=" * 50)
-    app.run(debug=True, port=8051, host="0.0.0.0")
+    app.run(debug=False, port=8051, host="0.0.0.0", use_reloader=False)
