@@ -1,0 +1,18 @@
+{
+    "criptos": [
+        "BTC-USDT"
+    ],
+    "pct_capital": 20,
+    "apalancamiento": 10,
+    "trailing_activacion": 3,
+    "trailing_distancia": 1.5,
+    "ema_rapida": 10,
+    "ema_lenta": 55,
+    "adx_keylevel": 23,
+    "modo": "demo",
+    "api_key": null,
+    "api_secret": null,
+    "telegram_token": null,
+    "telegram_chatid": null,
+    "language": "es"
+}

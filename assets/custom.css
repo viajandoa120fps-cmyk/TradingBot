@@ -1,0 +1,52 @@
+/* Fondo oscuro para todos los dropdowns */
+.dash-dropdown .Select-control {
+    background-color: #0d1117 !important;
+    border: 1px solid #21262d !important;
+    color: white !important;
+}
+
+.dash-dropdown .Select-value {
+    color: white !important;
+}
+
+.dash-dropdown .Select-value-label {
+    color: white !important;
+}
+
+.dash-dropdown .Select-placeholder {
+    color: #888 !important;
+}
+
+.dash-dropdown .Select-input input {
+    color: white !important;
+}
+
+.dash-dropdown .Select-menu-outer {
+    background-color: #161b22 !important;
+    border: 1px solid #21262d !important;
+}
+
+.dash-dropdown .Select-option {
+    background-color: #161b22 !important;
+    color: white !important;
+}
+
+.dash-dropdown .Select-option:hover,
+.dash-dropdown .Select-option.is-focused {
+    background-color: #2196F3 !important;
+    color: white !important;
+}
+
+.dash-dropdown .Select-option.is-selected {
+    background-color: #2196F3 !important;
+    color: white !important;
+}
+
+.dash-dropdown .Select-arrow {
+    border-color: #888 transparent transparent !important;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #0d1117; }
+::-webkit-scrollbar-thumb { background: #2196F3; border-radius: 3px; }
