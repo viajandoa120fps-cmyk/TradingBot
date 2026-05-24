@@ -26,12 +26,12 @@ def _exchange():
 
 
 def verificar_balance():
-    """Retorna el balance de USDT disponible, o None si falla."""
+    """Retorna el balance de USDT disponible como float, o None si falla."""
     try:
         b = _exchange().fetch_balance()
         return float(b["USDT"]["free"])
-    except Exception as e:
-        return None, str(e)
+    except Exception:
+        return None
 
 
 def colocar_orden(simbolo, lado, cantidad_usdt, apalancamiento=10, modo="demo"):

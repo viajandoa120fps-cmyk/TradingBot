@@ -18,7 +18,22 @@ from scipy.signal import argrelextrema
 import threading
 import json
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import bingx as bx
+
+# ─── LINREG CONSTANTS (LazyBear Squeeze kl=20, computed once at import) ──────
+_LR_KL   = 20
+_LR_X    = np.arange(_LR_KL, dtype=float) - (_LR_KL - 1) / 2
+_LR_XVAR = float((_LR_X ** 2).sum())
+_LR_XEND = float(_LR_X[-1])
+
+def _linreg_last(y: np.ndarray) -> float:
+    slope = (_LR_X * (y - y.mean())).sum() / _LR_XVAR
+    return y.mean() + slope * _LR_XEND
+
+# ─── TELEGRAM STATE (set once when bot starts) ────────────────────────────────
+_tg_token:  str = ""
+_tg_chatid: str = ""
 
 # ─── TRADUCCIONES ─────────────────────────────────────────────────────────────
 
@@ -258,7 +273,7 @@ TF_MAP = {
 _bot_thread = None
 _bot_stop   = threading.Event()
 _bot_lock   = threading.Lock()
-_bot_status = {"balance": None, "posicion": {}, "log": []}
+_bot_status = {"balance": None, "posicion": {}, "log": [], "mtf": {}}
 
 
 # ─── DATOS E INDICADORES ──────────────────────────────────────────────────────
@@ -313,31 +328,18 @@ def obtener_datos(activo="BTC", temporalidad="4H", velas=200):
     highest   = df["high"].rolling(kl).max()
     lowest    = df["low"].rolling(kl).min()
     delta     = df["close"] - ((highest + lowest) / 2 + sma_close) / 2
-
-    _x     = np.arange(kl, dtype=float) - (kl - 1) / 2  # centered x
-    _x_var = (_x ** 2).sum()
-    _x_end = _x[-1]
-
-    def _linreg_last(y):
-        slope = (_x * (y - y.mean())).sum() / _x_var
-        return y.mean() + slope * _x_end
-
     df["momentum"] = delta.rolling(kl).apply(_linreg_last, raw=True)
 
     # ADX (Wilder smoothing — matches TradingView DMI)
-    ln, a = 14, 1 / 14
-    tr14 = pd.concat([
-        df["high"] - df["low"],
-        (df["high"] - df["close"].shift()).abs(),
-        (df["low"]  - df["close"].shift()).abs(),
-    ], axis=1).max(axis=1)
+    # reuses `tr` from the KC block above — no recomputation needed
+    a = 1 / 14
     dm_p = ((df["high"] - df["high"].shift()) > (df["low"].shift() - df["low"])).astype(float) * \
            (df["high"] - df["high"].shift()).clip(lower=0)
     dm_m = ((df["low"].shift() - df["low"]) > (df["high"] - df["high"].shift())).astype(float) * \
            (df["low"].shift() - df["low"]).clip(lower=0)
-    tr14s      = tr14.ewm(alpha=a, adjust=False).mean()
-    df["DI_p"] = 100 * dm_p.ewm(alpha=a, adjust=False).mean() / tr14s
-    df["DI_m"] = 100 * dm_m.ewm(alpha=a, adjust=False).mean() / tr14s
+    tr_s       = tr.ewm(alpha=a, adjust=False).mean()
+    df["DI_p"] = 100 * dm_p.ewm(alpha=a, adjust=False).mean() / tr_s
+    df["DI_m"] = 100 * dm_m.ewm(alpha=a, adjust=False).mean() / tr_s
     dx         = 100 * (df["DI_p"] - df["DI_m"]).abs() / (df["DI_p"] + df["DI_m"])
     df["ADX"]  = dx.ewm(alpha=a, adjust=False).mean()
 
@@ -353,6 +355,82 @@ def _volume_profile(df, bins=90):
     poc_idx = int(np.argmax(vols))
     poc     = (niveles[poc_idx] + niveles[poc_idx + 1]) / 2
     return niveles, vols, poc
+
+
+def _analizar_mtf(activo, ema_comp_pct=1.0):
+    """
+    Cascade MTF: 1W (master direction) → 1D (filter) → 4H (entry trigger).
+
+    Reglas:
+      - 1W bullish  (sep > +ema_comp_pct AND mom > 0) → solo LONGS permitidos
+      - 1W bearish  (sep < -ema_comp_pct AND mom < 0) → solo SHORTS permitidos
+      - 1W compresión → esperar, sin entradas
+      - 1D debe confirmar: momentum en la misma dirección que 1W
+      - 4H debe confirmar: sep > umbral AND momentum en la misma dirección
+      - long_ok / short_ok son True solo cuando los 3 TF están alineados
+    """
+    _default = {
+        "activo": activo,
+        "1W": {"estado": "–", "sep": 0.0, "mom": 0.0},
+        "1D": {"estado": "–", "sep": 0.0, "mom": 0.0},
+        "4H": {"estado": "–", "sep": 0.0, "mom": 0.0},
+        "direccion": "esperar",
+        "long_ok":   False,
+        "short_ok":  False,
+    }
+    try:
+        # Fetch paralelo: 3 TF a la vez
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            f1w = pool.submit(obtener_datos, activo, "1W", 100)
+            f1d = pool.submit(obtener_datos, activo, "1D", 100)
+            f4h = pool.submit(obtener_datos, activo, "4H", 100)
+            df_1w, df_1d, df_4h = f1w.result(), f1d.result(), f4h.result()
+
+        if any(df is None or df.empty for df in [df_1w, df_1d, df_4h]):
+            return _default
+
+        def _tf_info(df):
+            """Devuelve estado, sep% y mom del último cierre."""
+            u   = df.iloc[-1]
+            sep = (float(u["EMA10"]) - float(u["EMA55"])) / float(u["EMA55"]) * 100
+            mom = float(u["momentum"])
+            if sep > ema_comp_pct and mom > 0:
+                estado = "alcista"
+            elif sep < -ema_comp_pct and mom < 0:
+                estado = "bajista"
+            else:
+                estado = "compresion"
+            return {"estado": estado, "sep": round(sep, 2), "mom": round(mom, 2)}, mom
+
+        r1w, mom_1w = _tf_info(df_1w)
+        r1d, mom_1d = _tf_info(df_1d)
+        r4h, mom_4h = _tf_info(df_4h)
+
+        result = {**_default, "1W": r1w, "1D": r1d, "4H": r4h}
+
+        dir_1w = r1w["estado"]
+
+        if dir_1w == "alcista":
+            result["direccion"] = "long"
+            # 1D: momentum positivo (giro iniciado o confirmado)
+            if mom_1d > 0:
+                # 4H: EMAs separadas alcistas Y momentum positivo
+                if r4h["sep"] > ema_comp_pct and mom_4h > 0:
+                    result["long_ok"] = True
+
+        elif dir_1w == "bajista":
+            result["direccion"] = "short"
+            # 1D: momentum negativo
+            if mom_1d < 0:
+                # 4H: EMAs separadas bajistas Y momentum negativo
+                if r4h["sep"] < -ema_comp_pct and mom_4h < 0:
+                    result["short_ok"] = True
+        # else: 1W en compresión → esperar (ambos False)
+
+        return result
+
+    except Exception:
+        return _default
 
 
 def calcular_score(df):
@@ -445,13 +523,25 @@ def crear_grafico(df, activo="BTC", compacto=False):
 
     t_max   = df["tiempo"].max()
     rango_s = (t_max - df["tiempo"].min()).total_seconds()
+    # Volume profile: batch 88 non-POC bars into ONE Scatter (was 90 separate traces)
+    x_vp, y_vp = [], []
     for i, v in enumerate(vols):
+        if i == poc_idx:
+            continue
         pmid  = (niveles[i] + niveles[i + 1]) / 2
-        color = "#FFD700" if i == poc_idx else "rgba(33,150,243,0.22)"
         t_ini = t_max - pd.Timedelta(seconds=rango_s * (v / vol_max) * 0.15)
-        fig.add_trace(go.Scatter(x=[t_ini, t_max], y=[pmid, pmid], mode="lines",
-            line=dict(color=color, width=3 if i == poc_idx else 1),
+        x_vp += [t_ini, t_max, None]
+        y_vp += [pmid,  pmid,  None]
+    if x_vp:
+        fig.add_trace(go.Scatter(x=x_vp, y=y_vp, mode="lines",
+            line=dict(color="rgba(33,150,243,0.22)", width=1),
             showlegend=False, hoverinfo="skip"), row=1, col=1)
+    # POC bar in gold (separate trace for distinct color/width)
+    poc_pmid = (niveles[poc_idx] + niveles[poc_idx + 1]) / 2
+    poc_tini = t_max - pd.Timedelta(seconds=rango_s * (vols[poc_idx] / vol_max) * 0.15)
+    fig.add_trace(go.Scatter(x=[poc_tini, t_max], y=[poc_pmid, poc_pmid], mode="lines",
+        line=dict(color="#FFD700", width=3),
+        showlegend=False, hoverinfo="skip"), row=1, col=1)
     fig.add_hline(y=poc, line_dash="dot", line_color="#FFD700", line_width=1, row=1, col=1)
 
     colores_m = []
@@ -498,7 +588,7 @@ def _grid_cols(n):
 def crear_mini_grafico(df_dict):
     activos = [a for a, df in df_dict.items() if df is not None and not df.empty]
     if not activos:
-        return go.Figure()
+        return go.Figure(), 1   # callers always unpack (fig, rows)
     n    = len(activos)
     cols = _grid_cols(n)
     rows = -(-n // cols)
@@ -523,9 +613,6 @@ def crear_mini_grafico(df_dict):
             line=dict(color="#2196F3", width=1), showlegend=False), row=row, col=col)
         fig.add_trace(go.Scatter(x=df["tiempo"], y=df["EMA55"],
             line=dict(color="#ef5350", width=1), showlegend=False), row=row, col=col)
-        # ADX label en el título
-        adx_val = float(df["ADX"].iloc[-1])
-        adx_col = "#00e676" if adx_val >= 23 else "#888"
 
     fig.update_xaxes(rangeslider_visible=False, gridcolor="#1a1a28",
                      color="#6b6b80", showticklabels=False)
@@ -541,17 +628,13 @@ def crear_mini_grafico(df_dict):
 # ─── TELEGRAM ─────────────────────────────────────────────────────────────────
 
 def _enviar_telegram(mensaje):
-    """Envía un mensaje via Telegram Bot API. Silencioso si no está configurado."""
+    """Envía un mensaje via Telegram Bot API. Usa credenciales cargadas al iniciar el bot."""
     try:
-        with open("config.json") as f:
-            cfg = json.load(f)
-        token   = cfg.get("telegram_token")
-        chat_id = cfg.get("telegram_chatid")
-        if not token or not chat_id:
+        if not _tg_token or not _tg_chatid:
             return
-        url  = f"https://api.telegram.org/bot{token}/sendMessage"
+        url  = f"https://api.telegram.org/bot{_tg_token}/sendMessage"
         data = json.dumps({
-            "chat_id":    str(chat_id),
+            "chat_id":    str(_tg_chatid),
             "text":       mensaje,
             "parse_mode": "HTML",
         }).encode("utf-8")
@@ -567,21 +650,32 @@ def _enviar_telegram(mensaje):
 # ─── BOT LOOP ─────────────────────────────────────────────────────────────────
 
 def _bot_loop(activos_lista, tf, capital_pct):
+    global _tg_token, _tg_chatid
     try:
         with open("config.json") as f:
             cfg = json.load(f)
     except Exception:
         cfg = {}
-    modo           = cfg.get("modo", "demo")
-    apalancamiento = cfg.get("apalancamiento", 10)
-    ts_activacion  = float(cfg.get("trailing_activacion", 3.0))   # % ganancia para activar
-    ts_distancia   = float(cfg.get("trailing_distancia",  1.5))   # % retroceso para cerrar
+    # Cache Telegram credentials at bot start — no per-message disk reads
+    _tg_token  = cfg.get("telegram_token",  "")
+    _tg_chatid = cfg.get("telegram_chatid", "")
+    modo              = cfg.get("modo", "demo")
+    apalancamiento    = cfg.get("apalancamiento", 10)
+    ts_activacion     = float(cfg.get("trailing_activacion",  3.0))
+    ts_distancia      = float(cfg.get("trailing_distancia",   1.5))
+    stop_loss_pct     = float(cfg.get("stop_loss_pct",        5.0))
+    max_perd_diaria   = float(cfg.get("max_perdida_diaria",  10.0))
+    ema_comp_pct      = float(cfg.get("ema_compresion_pct",   1.0))
 
     # Tracking por activo
     posicion        = {a: None  for a in activos_lista}
     precio_entrada  = {a: None  for a in activos_lista}
-    precio_extremo  = {a: None  for a in activos_lista}  # max (long) / min (short)
+    precio_extremo  = {a: None  for a in activos_lista}
     trailing_activo = {a: False for a in activos_lista}
+
+    # Tracking diario de pérdidas
+    perdida_acum    = 0.0
+    fecha_hoy       = datetime.now().date()
 
     # ── PRIORIDAD 3: Detectar posiciones abiertas en BingX al arrancar ──────────
     if modo == "real":
@@ -614,9 +708,29 @@ def _bot_loop(activos_lista, tf, capital_pct):
             _bot_status["log"] = _bot_status["log"][:8]
 
     while not _bot_stop.is_set():
+        # ── RESET DIARIO ──────────────────────────────────────────────────────
+        hoy = datetime.now().date()
+        if hoy != fecha_hoy:
+            perdida_acum = 0.0
+            fecha_hoy    = hoy
+
+        # ── STOP POR MAX PÉRDIDA DIARIA ───────────────────────────────────────
+        if max_perd_diaria > 0 and perdida_acum >= max_perd_diaria:
+            _enviar_telegram(
+                f"🚫 <b>MÁXIMA PÉRDIDA DIARIA ALCANZADA</b>\n"
+                f"Pérdida acumulada: <b>-{perdida_acum:.2f}%</b>\n"
+                f"Límite: <b>-{max_perd_diaria:.0f}%</b>\n"
+                f"El bot se detiene hasta mañana."
+            )
+            with _bot_lock:
+                _bot_status["log"].insert(0, f"[{datetime.now().strftime('%H:%M:%S')}] BOT DETENIDO — Max pérdida diaria ({perdida_acum:.1f}%)")
+                _bot_status["log"] = _bot_status["log"][:8]
+            _bot_stop.set()
+            break
+
         bal = bx.verificar_balance()
         with _bot_lock:
-            _bot_status["balance"] = bal if not isinstance(bal, tuple) else None
+            _bot_status["balance"] = bal  # None on failure (bingx.py normalised)
 
         for activo in activos_lista:
             if _bot_stop.is_set():
@@ -626,17 +740,44 @@ def _bot_loop(activos_lista, tf, capital_pct):
                 if df is None or df.empty:
                     continue
                 score, _   = calcular_score(df)
+                mtf        = _analizar_mtf(activo, ema_comp_pct)
+                with _bot_lock:
+                    _bot_status["mtf"] = mtf
                 simbolo    = SYMBOL_MAP.get(activo, f"{activo}/USDT")
                 pos_actual = posicion[activo]
                 precio     = float(df.iloc[-1]["close"])
 
-                # ── PRIORIDAD 2: TRAILING STOP ───────────────────────────────
+                # ── ACTUALIZAR PRECIO EXTREMO (antes de cualquier exit check) ──
+                if pos_actual and precio_entrada[activo]:
+                    if pos_actual == "long" and precio > (precio_extremo[activo] or precio):
+                        precio_extremo[activo] = precio
+                    elif pos_actual == "short" and precio < (precio_extremo[activo] or precio):
+                        precio_extremo[activo] = precio
+
+                # ── STOP LOSS FIJO ────────────────────────────────────────────
+                if pos_actual and precio_entrada[activo] and stop_loss_pct > 0:
+                    ep      = precio_entrada[activo]
+                    perdida = ((ep - precio) / ep * 100) if pos_actual == "long" \
+                              else ((precio - ep) / ep * 100)
+                    if perdida >= stop_loss_pct:
+                        bx.cerrar_posicion(simbolo, pos_actual)
+                        _enviar_telegram(
+                            f"🚨 <b>STOP LOSS ACTIVADO</b>\n"
+                            f"Par: <b>{simbolo}</b> | {pos_actual.upper()}\n"
+                            f"Entrada: <b>${ep:,.2f}</b>  Cierre: <b>${precio:,.2f}</b>\n"
+                            f"Pérdida: <b>-{perdida:.2f}%</b>"
+                        )
+                        perdida_acum += perdida
+                        posicion[activo] = precio_entrada[activo] = precio_extremo[activo] = None
+                        trailing_activo[activo] = False
+                        _registrar(activo, f"STOP LOSS -{perdida:.1f}%", None)
+                        continue
+
+                # ── TRAILING STOP ─────────────────────────────────────────────
                 if pos_actual and precio_entrada[activo]:
                     ep = precio_entrada[activo]
 
                     if pos_actual == "long":
-                        if precio > (precio_extremo[activo] or precio):
-                            precio_extremo[activo] = precio
                         profit_pct = (precio - ep) / ep * 100
                         if profit_pct >= ts_activacion:
                             trailing_activo[activo] = True
@@ -657,8 +798,6 @@ def _bot_loop(activos_lista, tf, capital_pct):
                                 continue
 
                     elif pos_actual == "short":
-                        if precio < (precio_extremo[activo] or precio):
-                            precio_extremo[activo] = precio
                         profit_pct = (ep - precio) / ep * 100
                         if profit_pct >= ts_activacion:
                             trailing_activo[activo] = True
@@ -678,8 +817,27 @@ def _bot_loop(activos_lista, tf, capital_pct):
                                 _registrar(activo, accion, None)
                                 continue
 
-                # ── PRIORIDAD 1: CERRAR SI SCORE VUELVE A ZONA WAIT ─────────
-                pos_actual = posicion[activo]
+                # ── CIERRE POR COMPRESIÓN EMA (fiesta terminando) ────────────
+                if pos_actual and abs(mtf["4H"]["sep"]) < ema_comp_pct:
+                    ep  = precio_entrada.get(activo) or precio
+                    pnl = ((precio - ep) / ep * 100) if pos_actual == "long" \
+                          else ((ep - precio) / ep * 100)
+                    sgn = "+" if pnl >= 0 else ""
+                    bx.cerrar_posicion(simbolo, pos_actual)
+                    _enviar_telegram(
+                        f"🔶 <b>CIERRE — COMPRESIÓN EMA</b>\n"
+                        f"Par: <b>{simbolo}</b> | {pos_actual.upper()}\n"
+                        f"Separación EMA 4H: <b>{mtf['4H']['sep']:+.1f}%</b> "
+                        f"(umbral ±{ema_comp_pct:.1f}%)\n"
+                        f"P&L estimado: <b>{sgn}{pnl:.2f}%</b>"
+                    )
+                    accion = f"Cierre COMP EMA {mtf['4H']['sep']:+.1f}% P&L={sgn}{pnl:.1f}%"
+                    posicion[activo] = precio_entrada[activo] = precio_extremo[activo] = None
+                    trailing_activo[activo] = False
+                    _registrar(activo, accion, None)
+                    continue
+
+                # ── CERRAR SI SCORE VUELVE A ZONA WAIT ───────────────────────
                 if pos_actual and -70 < score < 70:
                     ep  = precio_entrada.get(activo) or precio
                     pnl = ((precio - ep) / ep * 100) if pos_actual == "long" else ((ep - precio) / ep * 100)
@@ -698,44 +856,53 @@ def _bot_loop(activos_lista, tf, capital_pct):
                     continue
 
                 # ── SEÑALES DE ENTRADA ───────────────────────────────────────
-                pos_actual = posicion[activo]
                 with _bot_lock:
                     bal_v = _bot_status["balance"] or 0
                 capital = bal_v * (capital_pct / 100) if bal_v else 10
 
                 if score >= 70 and pos_actual != "long":
-                    if pos_actual == "short":
-                        bx.cerrar_posicion(simbolo, "short")
-                        _enviar_telegram(f"🔄 <b>CIERRE SHORT → LONG</b>\nPar: <b>{simbolo}</b>  |  Precio: <b>${precio:,.2f}</b>")
-                    bx.colocar_orden(simbolo, "long", capital, apalancamiento, modo)
-                    posicion[activo]       = "long"
-                    precio_entrada[activo] = precio
-                    precio_extremo[activo] = precio
-                    trailing_activo[activo]= False
-                    _enviar_telegram(
-                        f"🟢 <b>ENTRADA LONG</b>\n━━━━━━━━━━━━━━━━\n"
-                        f"Par: <b>{simbolo}</b>\nPrecio: <b>${precio:,.2f}</b>\n"
-                        f"Score: <b>{score:+d}</b>\nCapital: <b>${capital:.2f} USDT</b>\n"
-                        f"Apalancamiento: <b>x{apalancamiento}</b>\nModo: <b>{modo.upper()}</b>"
-                    )
-                    _registrar(activo, f"LONG score={score}", "long")
+                    if not mtf["long_ok"]:
+                        # MTF bloquea el LONG — dirección incorrecta o aún no alineada
+                        pass
+                    else:
+                        if pos_actual == "short":
+                            bx.cerrar_posicion(simbolo, "short")
+                            _enviar_telegram(f"🔄 <b>CIERRE SHORT → LONG</b>\nPar: <b>{simbolo}</b>  |  Precio: <b>${precio:,.2f}</b>")
+                        bx.colocar_orden(simbolo, "long", capital, apalancamiento, modo)
+                        posicion[activo]       = "long"
+                        precio_entrada[activo] = precio
+                        precio_extremo[activo] = precio
+                        trailing_activo[activo]= False
+                        _enviar_telegram(
+                            f"🟢 <b>ENTRADA LONG</b>\n━━━━━━━━━━━━━━━━\n"
+                            f"Par: <b>{simbolo}</b>\nPrecio: <b>${precio:,.2f}</b>\n"
+                            f"Score: <b>{score:+d}</b>\nCapital: <b>${capital:.2f} USDT</b>\n"
+                            f"Apalancamiento: <b>x{apalancamiento}</b>\nModo: <b>{modo.upper()}</b>\n"
+                            f"MTF: 1W {mtf['1W']['estado']} | 1D {mtf['1D']['estado']} | 4H {mtf['4H']['estado']}"
+                        )
+                        _registrar(activo, f"LONG score={score} MTF✅", "long")
 
                 elif score <= -70 and pos_actual != "short":
-                    if pos_actual == "long":
-                        bx.cerrar_posicion(simbolo, "long")
-                        _enviar_telegram(f"🔄 <b>CIERRE LONG → SHORT</b>\nPar: <b>{simbolo}</b>  |  Precio: <b>${precio:,.2f}</b>")
-                    bx.colocar_orden(simbolo, "short", capital, apalancamiento, modo)
-                    posicion[activo]       = "short"
-                    precio_entrada[activo] = precio
-                    precio_extremo[activo] = precio
-                    trailing_activo[activo]= False
-                    _enviar_telegram(
-                        f"🔴 <b>ENTRADA SHORT</b>\n━━━━━━━━━━━━━━━━\n"
-                        f"Par: <b>{simbolo}</b>\nPrecio: <b>${precio:,.2f}</b>\n"
-                        f"Score: <b>{score:+d}</b>\nCapital: <b>${capital:.2f} USDT</b>\n"
-                        f"Apalancamiento: <b>x{apalancamiento}</b>\nModo: <b>{modo.upper()}</b>"
-                    )
-                    _registrar(activo, f"SHORT score={score}", "short")
+                    if not mtf["short_ok"]:
+                        # MTF bloquea el SHORT
+                        pass
+                    else:
+                        if pos_actual == "long":
+                            bx.cerrar_posicion(simbolo, "long")
+                            _enviar_telegram(f"🔄 <b>CIERRE LONG → SHORT</b>\nPar: <b>{simbolo}</b>  |  Precio: <b>${precio:,.2f}</b>")
+                        bx.colocar_orden(simbolo, "short", capital, apalancamiento, modo)
+                        posicion[activo]       = "short"
+                        precio_entrada[activo] = precio
+                        precio_extremo[activo] = precio
+                        trailing_activo[activo]= False
+                        _enviar_telegram(
+                            f"🔴 <b>ENTRADA SHORT</b>\n━━━━━━━━━━━━━━━━\n"
+                            f"Par: <b>{simbolo}</b>\nPrecio: <b>${precio:,.2f}</b>\n"
+                            f"Score: <b>{score:+d}</b>\nCapital: <b>${capital:.2f} USDT</b>\n"
+                            f"Apalancamiento: <b>x{apalancamiento}</b>\nModo: <b>{modo.upper()}</b>\n"
+                            f"MTF: 1W {mtf['1W']['estado']} | 1D {mtf['1D']['estado']} | 4H {mtf['4H']['estado']}"
+                        )
+                        _registrar(activo, f"SHORT score={score} MTF✅", "short")
 
             except Exception as e:
                 ts = datetime.now().strftime("%H:%M:%S")
@@ -790,6 +957,15 @@ def _scoring_bar(prefix=""):
 # ─── PÁGINAS ──────────────────────────────────────────────────────────────────
 
 def _pagina_principal():
+    try:
+        with open("config.json") as f:
+            _ui_cfg = json.load(f)
+        _ts_act    = float(_ui_cfg.get("trailing_activacion",  3.0))
+        _ts_dist   = float(_ui_cfg.get("trailing_distancia",   1.5))
+        _sl_pct    = float(_ui_cfg.get("stop_loss_pct",        5.0))
+        _sl_diario = float(_ui_cfg.get("max_perdida_diaria",  10.0))
+    except Exception:
+        _ts_act = 3.0; _ts_dist = 1.5; _sl_pct = 5.0; _sl_diario = 10.0
     return [
         html.Div(id="contenido-principal", children=[
 
@@ -823,10 +999,10 @@ def _pagina_principal():
                     html.Div(style={"textAlign": "center", "marginBottom": "8px"}, children=[
                         html.Span(id="val-capital", style={
                             "fontFamily": "Cinzel, serif", "fontSize": "22px", "color": "#f0c040",
-                        }, children="20%"),
+                        }, children="5%"),
                     ]),
-                    dcc.Slider(id="slider-capital", min=5, max=50, step=5, value=20,
-                               marks={5:"5%", 20:"20%", 35:"35%", 50:"50%"},
+                    dcc.Slider(id="slider-capital", min=1, max=20, step=1, value=5,
+                               marks={1:"1%", 5:"5%", 10:"10%", 15:"15%", 20:"20%"},
                                tooltip={"placement": "bottom", "always_visible": False}),
                 ]),
             ]),
@@ -912,18 +1088,56 @@ def _pagina_principal():
                     html.Div(className="seccion-titulo", children="Trailing Stop"),
                     html.Div([
                         html.Div(className="stat-fila", children=[
-                            html.Span("Activación",    className="stat-nombre"),
-                            html.Span("+3.0%",         className="stat-valor"),
+                            html.Span("Activación",              className="stat-nombre"),
+                            html.Span(f"+{_ts_act:.1f}%",        className="stat-valor"),
                         ]),
                         html.Div(className="stat-fila", children=[
-                            html.Span("Distancia",     className="stat-nombre"),
-                            html.Span("1.5%",          className="stat-valor"),
+                            html.Span("Distancia",               className="stat-nombre"),
+                            html.Span(f"{_ts_dist:.1f}%",        className="stat-valor"),
                         ]),
                         html.Div(className="stat-fila", children=[
-                            html.Span("Sin Stop Fijo", className="stat-nombre"),
-                            html.Span("OK",            className="stat-valor"),
+                            html.Span("Stop Loss",               className="stat-nombre"),
+                            html.Span(f"−{_sl_pct:.1f}%",        className="stat-valor",
+                                      style={"color": "#ff3355", "fontWeight": "600"}),
+                        ]),
+                        html.Div(className="stat-fila", children=[
+                            html.Span("Pérd. Diaria Máx.",       className="stat-nombre"),
+                            html.Span(f"−{_sl_diario:.0f}%",     className="stat-valor",
+                                      style={"color": "#f0c040"}),
                         ]),
                     ]),
+                ]),
+                html.Div(className="separador-dorado"),
+                html.Div(className="seccion-control", children=[
+                    html.Div(className="seccion-titulo", children="Dirección MTF"),
+                    html.Div(className="stat-fila", children=[
+                        html.Span("1W", className="stat-nombre",
+                                  style={"fontSize": "10px", "fontWeight": "700",
+                                         "letterSpacing": "0.1em"}),
+                        html.Span("–", id="mtf-1w", className="stat-valor",
+                                  style={"fontSize": "11px", "fontFamily": "monospace"}),
+                    ]),
+                    html.Div(className="stat-fila", children=[
+                        html.Span("1D", className="stat-nombre",
+                                  style={"fontSize": "10px", "fontWeight": "700",
+                                         "letterSpacing": "0.1em"}),
+                        html.Span("–", id="mtf-1d", className="stat-valor",
+                                  style={"fontSize": "11px", "fontFamily": "monospace"}),
+                    ]),
+                    html.Div(className="stat-fila", children=[
+                        html.Span("4H", className="stat-nombre",
+                                  style={"fontSize": "10px", "fontWeight": "700",
+                                         "letterSpacing": "0.1em"}),
+                        html.Span("–", id="mtf-4h", className="stat-valor",
+                                  style={"fontSize": "11px", "fontFamily": "monospace"}),
+                    ]),
+                    html.Div(id="mtf-direccion", style={
+                        "textAlign": "center", "marginTop": "6px",
+                        "fontSize": "11px", "fontWeight": "700",
+                        "letterSpacing": "0.06em", "padding": "5px 4px",
+                        "background": "#111120", "borderRadius": "4px",
+                        "border": "1px solid #2a2a3a",
+                    }, children="⏳ Bot detenido"),
                 ]),
                 html.Div(className="separador-dorado"),
                 html.Div(className="seccion-control", children=[
@@ -1043,6 +1257,13 @@ app.layout = html.Div([
 ])
 
 
+# ─── HELPERS DE CALLBACK ──────────────────────────────────────────────────────
+
+def _gr(est, val):
+    """Retorna los 3 valores Dash Output para una tarjeta guardarrail."""
+    return f"guardarrail-card {est}", f"guardarrail-indicador {est}", val
+
+
 # ─── CALLBACKS ────────────────────────────────────────────────────────────────
 
 @app.callback(
@@ -1114,7 +1335,7 @@ def cb_bot(n, activo, idioma, activos_sel, tf, capital_pct):
         _bot_stop.clear()
         _bot_thread = threading.Thread(
             target=_bot_loop,
-            args=(activos_lista, tf or "4H", capital_pct or 20),
+            args=(activos_lista, tf or "4H", capital_pct or 5),
             daemon=True,
         )
         _bot_thread.start()
@@ -1166,9 +1387,6 @@ def cb_btc_dashboard(_, tf, idioma):
                         annotations=[dict(text="Sin datos", showarrow=False,
                                           font=dict(color="#6b5520",size=16), x=0.5, y=0.5)])
         return f
-
-    def _gr(est, val):
-        return f"guardarrail-card {est}", f"guardarrail-indicador {est}", val
 
     df = obtener_datos("BTC", tf or "4H")
     if df is None or df.empty:
@@ -1238,10 +1456,16 @@ def cb_asset_grid(activos, tf, _):
     if not activos:
         return []
 
-    df_dict = {}
-    for a in activos:
-        df_dict[a] = obtener_datos(a, tf or "4H", velas=100)
-        time.sleep(0.15)
+    tf_ = tf or "4H"
+    with ThreadPoolExecutor(max_workers=min(len(activos), 6)) as pool:
+        futures = {pool.submit(obtener_datos, a, tf_, 100): a for a in activos}
+        df_dict = {}
+        for fut in as_completed(futures):
+            a = futures[fut]
+            try:
+                df_dict[a] = fut.result()
+            except Exception:
+                df_dict[a] = None
 
     resultado = crear_mini_grafico(df_dict)
     if resultado is None:
@@ -1285,17 +1509,12 @@ def cb_detail(_, tf, pathname):
     if pathname and "/detail/" in pathname:
         symbol = pathname.split("/detail/")[-1].upper()
 
-    def _gr(est, val):
-        return f"guardarrail-card {est}", f"guardarrail-indicador {est}", val
-
     df = obtener_datos(symbol, tf or "4H")
     if df is None or df.empty:
         off = _gr("off", "-")
-        bar = [html.Div("–", className="sc-numero"),
-               html.Div(className="sc-barra-wrap",
-                        children=[html.Div(className="sc-barra",
-                                           style={"width":"50%","background":"#2a2a3a"})]),
-               html.Div("–", className="sc-etiqueta", style={"color":"#a0a8c0"})]
+        bar = _scoring_bar_children("–", "sc-numero", "–",
+                                    {"color":"#a0a8c0"},
+                                    {"width":"50%","background":"#2a2a3a"})
         f = go.Figure()
         f.update_layout(paper_bgcolor="#0a0a0f", plot_bgcolor="#0a0a0f")
         return (f, bar, *off,*off,*off,*off,*off)
@@ -1314,12 +1533,7 @@ def cb_detail(_, tf, pathname):
         sc_cls, sc_lbl, sc_sty = "sc-numero",       "ESPERAR", {"color":"#a0a8c0"}
         sc_bar = {"width":pct,"background":"#c8a84b","transition":"width .8s ease"}
 
-    bar = [
-        html.Div(str(score), className=sc_cls),
-        html.Div(className="sc-barra-wrap",
-                 children=[html.Div(className="sc-barra", style=sc_bar)]),
-        html.Div(sc_lbl, className="sc-etiqueta", style=sc_sty),
-    ]
+    bar = _scoring_bar_children(str(score), sc_cls, sc_lbl, sc_sty, sc_bar)
 
     return (
         fig, bar,
@@ -1335,13 +1549,18 @@ def cb_detail(_, tf, pathname):
     [Output("bot-balance-val",  "children"),
      Output("bot-log",          "children"),
      Output("telegram-estado",  "children"),
-     Output("telegram-estado",  "style")],
+     Output("telegram-estado",  "style"),
+     Output("mtf-1w",           "children"),
+     Output("mtf-1d",           "children"),
+     Output("mtf-4h",           "children"),
+     Output("mtf-direccion",    "children")],
     Input("tick-bot-status", "n_intervals"),
 )
 def cb_bot_status(_):
     with _bot_lock:
         bal = _bot_status["balance"]
         log = list(_bot_status["log"])
+        mtf = dict(_bot_status.get("mtf", {}))
 
     bal_txt   = f"${bal:,.2f}" if isinstance(bal, float) else "–"
     log_items = [
@@ -1350,18 +1569,42 @@ def cb_bot_status(_):
         for msg in log[:5]
     ] if log else [html.Div("Sin actividad", style={"color": "#3a3a50"})]
 
-    # Estado Telegram
-    try:
-        with open("config.json") as f:
-            cfg = json.load(f)
-        tg_ok = bool(cfg.get("telegram_token") and cfg.get("telegram_chatid"))
-    except Exception:
-        tg_ok = False
+    # Estado Telegram — usa credenciales en memoria (cargadas al iniciar bot)
+    tg_ok    = bool(_tg_token and _tg_chatid)
     tg_txt   = "✅ Conectado" if tg_ok else "⚠ No configurado"
     tg_style = {"color": "#00ff88", "fontSize": "12px"} if tg_ok else \
                {"color": "#f0c040", "fontSize": "12px"}
 
-    return bal_txt, log_items, tg_txt, tg_style
+    # ── MTF display ────────────────────────────────────────────────────────────
+    def _fmt_tf(data):
+        if not data:
+            return "–"
+        est = data.get("estado", "–")
+        sep = data.get("sep", 0.0)
+        mom = data.get("mom", 0.0)
+        ico = "🟢" if est == "alcista" else "🔴" if est == "bajista" else "🟡"
+        lbl = {"alcista": "ALCISTA", "bajista": "BAJISTA"}.get(est, "COMP")
+        arr = "▲" if mom >= 0 else "▼"
+        return f"{ico} {lbl}  {arr} sep:{sep:+.1f}%"
+
+    mtf_1w_txt = _fmt_tf(mtf.get("1W"))
+    mtf_1d_txt = _fmt_tf(mtf.get("1D"))
+    mtf_4h_txt = _fmt_tf(mtf.get("4H"))
+
+    if not mtf:
+        mtf_dir = "⏳ Bot detenido"
+    else:
+        dir_  = mtf.get("direccion", "esperar")
+        lo    = mtf.get("long_ok",   False)
+        so    = mtf.get("short_ok",  False)
+        if dir_ == "long":
+            mtf_dir = "🟢 BUSCANDO LONG  ⛔ SHORT OFF" if lo else "🟡 LONG pendiente 4H  ⛔ SHORT OFF"
+        elif dir_ == "short":
+            mtf_dir = "🔴 BUSCANDO SHORT  ⛔ LONG OFF" if so else "🟡 SHORT pendiente 4H  ⛔ LONG OFF"
+        else:
+            mtf_dir = "⏳ ESPERAR — sin dirección clara"
+
+    return bal_txt, log_items, tg_txt, tg_style, mtf_1w_txt, mtf_1d_txt, mtf_4h_txt, mtf_dir
 
 
 if __name__ == "__main__":

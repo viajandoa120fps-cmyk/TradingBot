@@ -2,17 +2,21 @@
     "criptos": [
         "BTC-USDT"
     ],
-    "pct_capital": 20,
+    "pct_capital": 5,
     "apalancamiento": 10,
     "trailing_activacion": 3,
     "trailing_distancia": 1.5,
+    "stop_loss_pct": 5,
+    "max_perdida_diaria": 10,
     "ema_rapida": 10,
     "ema_lenta": 55,
     "adx_keylevel": 23,
     "modo": "demo",
+    "ema_compresion_pct": 1.0,
     "api_key": "vXx9kSWExAvdPMfUKKc7TfmeDJczN5iOoan6codJObOePWQ67KP5rgJIUWvEt1Ht0jwS2OBSFfL0E88FUbuTg",
     "api_secret": "td2uPRf2fYpBooVJUJkkGw2NxkVIF8n9rOebunMTBdU1ZnD6cr0F8F9WQj5CDRXSrSYhzgop6AxE1jNUeA",
     "telegram_token": "8763065253:AAFs0XULOjkM5aq7i6nJuroL_NQjxEgSgn4",
     "telegram_chatid": "1508556097",
     "language": "es"
 }
+"kimi_api_key": "sk-kOMbN4x6bWsjXoGAacGStRgjfsryQAy2dqHkni7vPED02TvR" 
