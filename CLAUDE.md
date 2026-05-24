@@ -134,6 +134,63 @@ Sin excepción, incluyendo el bloque de max-pérdida diaria.
 ### 11. Fallback de capital_pct: usar el valor del slider, no el viejo default
 El slider tiene `value=5`. El fallback en `cb_bot` debe ser `capital_pct or 5`, no `or 20`.
 
+### 12. ccxt.bingx() SIEMPRE con API keys — nunca instancia vacía
+`obtener_datos()` crea la instancia BingX con las credenciales del módulo. Sin keys, BingX falla silenciosamente y TODOS los datos vienen de Binance spot (precios distintos). Este bug es invisible si no hay logging.
+
+```python
+# MAL — falla silenciosa, cae a Binance sin avisar
+ex = ccxt.bingx({"enableRateLimit": True})
+
+# BIEN — usa credenciales del módulo + logging explícito
+ex = ccxt.bingx({
+    "apiKey": _bx_api_key,
+    "secret": _bx_api_secret,
+    "enableRateLimit": True,
+})
+```
+
+Las credenciales BingX se cargan a nivel módulo al inicio del proceso (no en el bot loop):
+```python
+_bx_api_key:    str = ""
+_bx_api_secret: str = ""
+try:
+    with open("config.json") as _f_ini:
+        _ini_cfg = json.load(_f_ini)
+    _bx_api_key    = str(_ini_cfg.get("api_key",    ""))
+    _bx_api_secret = str(_ini_cfg.get("api_secret", ""))
+except Exception:
+    pass
+```
+
+### 13. Fallback a Binance: siempre loggear, nunca silencioso
+Cuando BingX falla y el sistema cae a Binance, DEBE aparecer un mensaje en consola. Un fallback silencioso hace imposible diagnosticar de qué fuente vienen los datos.
+
+```python
+# MAL — el usuario nunca sabe si está usando Binance
+except Exception:
+    pass
+if not raw:
+    ex = ccxt.binance(...)
+
+# BIEN — log explícito en cada error y en el fallback
+except Exception as e:
+    print(f"[⚠ BingX OHLCV] {activo} {temporalidad}: {e}")
+if not raw:
+    print(f"[⚠ FALLBACK Binance] {activo} {temporalidad} — BingX no respondió.")
+```
+
+### 14. Panel de señales por activo — patrón `_señal_card()`
+El panel `panel-señales-mini` muestra una tarjeta por activo seleccionado con barra de progreso hacia el umbral ±70. Los scores se almacenan en `_bot_status["scores"]` (dict `{activo: float}`). El callback `cb_bot_status` recibe `State("checklist-activos", "value")` para saber qué activos renderizar.
+
+```python
+# Score guardado en bot loop (después de calcular_score, antes de MTF)
+with _bot_lock:
+    _bot_status["scores"][activo] = score
+
+# Lógica de porcentaje
+pct = min(abs(score) / 70 * 100, 100)  # 0% = neutral, 100% = umbral alcanzado
+```
+
 ---
 
 ## Estructura del bot loop
@@ -197,9 +254,11 @@ Nunca en serie para no bloquear el bot loop.
 _bot_thread = None
 _bot_stop   = threading.Event()
 _bot_lock   = threading.Lock()
-_bot_status = {"balance": None, "posicion": {}, "log": [], "mtf": {}}
-_tg_token:  str = ""   # cargado al iniciar _bot_loop
-_tg_chatid: str = ""   # cargado al iniciar _bot_loop
+_bot_status = {"balance": None, "posicion": {}, "log": [], "mtf": {}, "scores": {}}
+_tg_token:      str = ""   # cargado al iniciar _bot_loop
+_tg_chatid:     str = ""   # cargado al iniciar _bot_loop
+_bx_api_key:    str = ""   # cargado al iniciar el proceso (nivel módulo)
+_bx_api_secret: str = ""   # cargado al iniciar el proceso (nivel módulo)
 ```
 
 `_bot_status["mtf"]` se actualiza con cada iteración del loop (por activo).
@@ -237,10 +296,65 @@ Estructura devuelta por `_analizar_mtf()`:
 
 ---
 
+## Debugging — lecciones aprendidas (mayo 2026)
+
+### Problema: cambios en UI no se reflejan en el navegador a pesar de que el servidor está corriendo código nuevo
+
+**Síntomas observados:**
+- Label `lbl-activos` mostraba texto viejo ("ACTIVOS (MÁX. 6)") aunque `TRANSLATIONS["es"]["assets"]` estaba actualizado
+- Panel `panel-señales-mini` no aparecía aunque el código era correcto
+- Ocurría incluso en Edge modo InPrivate
+
+**Protocolo de diagnóstico (en orden):**
+
+1. **Verificar que el archivo fue guardado** — usar grep o read para confirmar que el texto nuevo está en el archivo
+2. **Verificar qué código está corriendo** — añadir print en el bloque `if __name__ == "__main__"`:
+   ```python
+   print(f"  [CHECK] Label activos ES: {TRANSLATIONS['es']['assets']}")
+   ```
+   Si el terminal muestra el valor viejo → el servidor está corriendo código viejo → reiniciar
+   Si muestra el valor nuevo → el problema está en el navegador → limpiar caché
+
+3. **Eliminar caché de Python** antes de reiniciar:
+   ```powershell
+   Remove-Item "C:\Users\Dell\Desktop\TradingBot\__pycache__" -Recurse -Force
+   ```
+
+4. **Usar flag `-B` al arrancar** para evitar bytecode cache:
+   ```
+   python -B main.py
+   ```
+
+5. **Abrir el servidor desde PowerShell** (yo puedo hacerlo):
+   ```powershell
+   Get-Process python | Stop-Process -Force
+   Start-Process cmd -ArgumentList '/k', 'cd /d "C:\...\TradingBot" && python -B main.py'
+   ```
+
+6. **En el navegador** — si el CHECK confirma código nuevo pero la UI muestra texto viejo:
+   - Usar `http://localhost:8051` (con http://) en InPrivate
+   - Presionar F5 para recargar
+
+### Regla permanente: `iniciar_bot.bat` usa `-B`
+```bat
+python -B main.py
+```
+No `python main.py`. El flag `-B` evita que Python use bytecode cacheado.
+
+### Regla permanente: las tarjetas de señal requieren bot activo
+El `panel-señales-mini` solo muestra tarjetas cuando:
+1. Al menos 1 activo está seleccionado en el checklist
+2. El bot está corriendo (INICIAR BOT presionado)
+Sin ambas condiciones el panel muestra texto invisible o vacío.
+
+---
+
 ## Pendiente (próximas sesiones)
 
 - [ ] Bug visual: slider de capital no refleja el cambio a 5% tras reiniciar (investigar)
 - [x] MTF guardarrail — IMPLEMENTADO (mayo 2026)
+- [x] Panel señales mini por activo (`panel-señales-mini`) — IMPLEMENTADO (mayo 2026)
+- [x] BingX data source fix — API keys pasadas correctamente, logging de fallback — IMPLEMENTADO (mayo 2026)
 - [ ] Historial de trades persistente
 - [ ] P&L en tiempo real de la posición abierta
 - [ ] Migrar VP a TradingView Lightweight Charts (mejor interacción Y-axis)

@@ -7,7 +7,7 @@ echo   Iniciando servidor...
 echo  ============================================
 echo.
 cd /d "%~dp0"
-python main.py
+python -B main.py
 echo.
 echo  El servidor se detuvo. Presiona cualquier tecla para cerrar.
 pause >nul

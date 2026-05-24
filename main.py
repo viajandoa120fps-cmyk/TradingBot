@@ -35,6 +35,17 @@ def _linreg_last(y: np.ndarray) -> float:
 _tg_token:  str = ""
 _tg_chatid: str = ""
 
+# ─── CREDENCIALES BINGX (cargadas al iniciar el proceso, disponibles siempre) ─
+_bx_api_key:    str = ""
+_bx_api_secret: str = ""
+try:
+    with open("config.json") as _f_ini:
+        _ini_cfg = json.load(_f_ini)
+    _bx_api_key    = str(_ini_cfg.get("api_key",    ""))
+    _bx_api_secret = str(_ini_cfg.get("api_secret", ""))
+except Exception:
+    pass
+
 # ─── TRADUCCIONES ─────────────────────────────────────────────────────────────
 
 TRANSLATIONS = {
@@ -42,7 +53,7 @@ TRANSLATIONS = {
         "title": "AERO BOT PRO", "subtitle": "Trading Bot Profesional",
         "connected": "CONECTADO", "disconnected": "DESCONECTADO",
         "language": "Idioma", "timeframe": "Temporalidad",
-        "assets": "Activos (máx. 6)", "capital": "Capital por Op.",
+        "assets": "Cripto BingX (max. 6)", "capital": "Capital por Op.",
         "score": "PUNTUACIÓN GLOBAL",
         "long": "LARGO", "short": "CORTO", "wait": "ESPERAR",
         "stats": "Estadísticas en Tiempo Real", "guardrails": "Guardarrailes",
@@ -53,7 +64,7 @@ TRANSLATIONS = {
         "title": "AERO BOT PRO", "subtitle": "Professional Trading Bot",
         "connected": "CONNECTED", "disconnected": "DISCONNECTED",
         "language": "Language", "timeframe": "Timeframe",
-        "assets": "Assets (max. 6)", "capital": "Capital per Op.",
+        "assets": "Crypto BingX (max. 6)", "capital": "Capital per Op.",
         "score": "GLOBAL SCORE",
         "long": "LONG", "short": "SHORT", "wait": "WAIT",
         "stats": "Real-Time Statistics", "guardrails": "Guardrails",
@@ -64,7 +75,7 @@ TRANSLATIONS = {
         "title": "AERO BOT PRO", "subtitle": "Bot di Trading Professionale",
         "connected": "CONNESSO", "disconnected": "DISCONNESSO",
         "language": "Lingua", "timeframe": "Temporalità",
-        "assets": "Asset (max. 6)", "capital": "Capitale per Op.",
+        "assets": "Cripto BingX (max. 6)", "capital": "Capitale per Op.",
         "score": "PUNTEGGIO GLOBALE",
         "long": "LUNGO", "short": "CORTO", "wait": "ATTENDI",
         "stats": "Statistiche in Tempo Reale", "guardrails": "Guardrail",
@@ -75,7 +86,7 @@ TRANSLATIONS = {
         "title": "AERO BOT PRO", "subtitle": "Bot de Trading Professionnel",
         "connected": "CONNECTÉ", "disconnected": "DÉCONNECTÉ",
         "language": "Langue", "timeframe": "Temporalité",
-        "assets": "Actifs (max. 6)", "capital": "Capital par Op.",
+        "assets": "Crypto BingX (max. 6)", "capital": "Capital par Op.",
         "score": "SCORE GLOBAL",
         "long": "LONG", "short": "COURT", "wait": "ATTENDRE",
         "stats": "Statistiques en Temps Réel", "guardrails": "Garde-fous",
@@ -86,7 +97,7 @@ TRANSLATIONS = {
         "title": "AERO BOT PRO", "subtitle": "Professioneller Trading Bot",
         "connected": "VERBUNDEN", "disconnected": "GETRENNT",
         "language": "Sprache", "timeframe": "Zeitrahmen",
-        "assets": "Assets (max. 6)", "capital": "Kapital pro Op.",
+        "assets": "Krypto BingX (max. 6)", "capital": "Kapital pro Op.",
         "score": "GESAMTPUNKTZAHL",
         "long": "LONG", "short": "SHORT", "wait": "WARTEN",
         "stats": "Echtzeit-Statistiken", "guardrails": "Leitplanken",
@@ -97,7 +108,7 @@ TRANSLATIONS = {
         "title": "AERO BOT PRO", "subtitle": "专业交易机器人",
         "connected": "已连接", "disconnected": "未连接",
         "language": "语言", "timeframe": "时间框架",
-        "assets": "资产（最多6个）", "capital": "每次资金",
+        "assets": "加密货币 BingX（最多6个）", "capital": "每次资金",
         "score": "综合评分",
         "long": "做多", "short": "做空", "wait": "等待",
         "stats": "实时统计", "guardrails": "防护栏",
@@ -108,7 +119,7 @@ TRANSLATIONS = {
         "title": "AERO BOT PRO", "subtitle": "전문 트레이딩 봇",
         "connected": "연결됨", "disconnected": "연결 안됨",
         "language": "언어", "timeframe": "시간대",
-        "assets": "자산 (최대 6개)", "capital": "거래당 자본",
+        "assets": "암호화폐 BingX (최대 6개)", "capital": "거래당 자본",
         "score": "종합 점수",
         "long": "롱", "short": "숏", "wait": "대기",
         "stats": "실시간 통계", "guardrails": "가드레일",
@@ -119,7 +130,7 @@ TRANSLATIONS = {
         "title": "AERO BOT PRO", "subtitle": "プロトレーディングボット",
         "connected": "接続済み", "disconnected": "未接続",
         "language": "言語", "timeframe": "時間軸",
-        "assets": "資産（最大6個）", "capital": "取引資金",
+        "assets": "暗号資産 BingX（最大6個）", "capital": "取引資金",
         "score": "総合スコア",
         "long": "ロング", "short": "ショート", "wait": "待機",
         "stats": "リアルタイム統計", "guardrails": "ガードレール",
@@ -273,7 +284,7 @@ TF_MAP = {
 _bot_thread = None
 _bot_stop   = threading.Event()
 _bot_lock   = threading.Lock()
-_bot_status = {"balance": None, "posicion": {}, "log": [], "mtf": {}}
+_bot_status = {"balance": None, "posicion": {}, "log": [], "mtf": {}, "scores": {}, "activos": []}
 
 
 # ─── DATOS E INDICADORES ──────────────────────────────────────────────────────
@@ -282,18 +293,26 @@ def obtener_datos(activo="BTC", temporalidad="4H", velas=200):
     simbolo = SYMBOL_MAP.get(activo, "BTC/USDT")
     tf      = TF_MAP.get(temporalidad, "4h")
     raw     = None
-    # Prefer BingX perpetual (matches TradingView BingX charts exactly)
+    # ── Fuente primaria: BingX perpetual ──────────────────────────────────────
     try:
-        ex  = ccxt.bingx({"enableRateLimit": True})
+        ex  = ccxt.bingx({
+            "apiKey": _bx_api_key,
+            "secret": _bx_api_secret,
+            "enableRateLimit": True,
+        })
         raw = ex.fetch_ohlcv(simbolo + ":USDT", tf, limit=velas + 300)
-    except Exception:
-        pass
-    # Fallback: Binance spot
+        if raw:
+            pass  # BingX OK
+    except Exception as e:
+        print(f"[⚠ BingX OHLCV] {activo} {temporalidad}: {e}")
+    # ── Fallback: Binance spot (precios ligeramente distintos — solo emergencia) ─
     if not raw:
+        print(f"[⚠ FALLBACK Binance] {activo} {temporalidad} — BingX no respondió. Señales basadas en Binance spot.")
         try:
-            ex  = ccxt.binance({"enableRateLimit": False})
+            ex  = ccxt.binance({"enableRateLimit": True})
             raw = ex.fetch_ohlcv(simbolo, tf, limit=velas + 300)
-        except Exception:
+        except Exception as e:
+            print(f"[⚠ Binance OHLCV] {activo} {temporalidad}: {e}")
             return None
     df = pd.DataFrame(raw, columns=["tiempo", "open", "high", "low", "close", "volumen"])
     df["tiempo"] = pd.to_datetime(df["tiempo"], unit="ms")
@@ -740,6 +759,8 @@ def _bot_loop(activos_lista, tf, capital_pct):
                 if df is None or df.empty:
                     continue
                 score, _   = calcular_score(df)
+                with _bot_lock:
+                    _bot_status["scores"][activo] = score
                 mtf        = _analizar_mtf(activo, ema_comp_pct)
                 with _bot_lock:
                     _bot_status["mtf"] = mtf
@@ -1071,7 +1092,7 @@ def _pagina_principal():
             html.Div(className="panel-lateral derecho", children=[
                 html.Div(className="seccion-control", children=[
                     html.Div(id="lbl-activos", className="seccion-titulo",
-                             children="Activos (máx. 6)"),
+                             children="Cripto BingX (max. 6)"),
                     html.Div(className="checklist-scroll", children=[
                         dcc.Checklist(
                             id="checklist-activos",
@@ -1082,6 +1103,7 @@ def _pagina_principal():
                             labelStyle={"display": "flex", "alignItems": "center", "gap": "10px"},
                         ),
                     ]),
+                    html.Div(id="panel-senales-mini", style={"marginTop": "8px"}),
                 ]),
                 html.Div(className="separador-dorado"),
                 html.Div(className="seccion-control", children=[
@@ -1332,6 +1354,8 @@ def cb_bot(n, activo, idioma, activos_sel, tf, capital_pct):
     nuevo = not activo
     if nuevo:
         activos_lista = ["BTC"] + [a for a in (activos_sel or []) if a != "BTC"]
+        with _bot_lock:
+            _bot_status["activos"] = [a for a in activos_lista if a != "BTC"]
         _bot_stop.clear()
         _bot_thread = threading.Thread(
             target=_bot_loop,
@@ -1545,6 +1569,54 @@ def cb_detail(_, tf, pathname):
     )
 
 
+# ── Helper: mini tarjeta de señal por activo ──────────────────────────────────
+def _senal_card(ticker, score):
+    if score is None:
+        return html.Div([
+            html.Span(ticker, style={"fontWeight": "700", "fontSize": "11px",
+                                     "color": "#aaa", "minWidth": "38px"}),
+            html.Span("–", style={"color": "#333344", "fontSize": "10px"}),
+        ], style={"display": "flex", "justifyContent": "space-between",
+                  "alignItems": "center", "padding": "3px 0",
+                  "borderBottom": "1px solid #12121f"})
+
+    abs_s = abs(score)
+    pct   = min(abs_s / 70 * 100, 100)
+
+    if score >= 70:
+        color, bar_c = "#00ff88", "#00ff88"
+        label = "🟢 ENTRANDO"
+    elif score > 15:
+        color, bar_c = "#00cc66", "#00cc66"
+        label = f"🟢 LONG  {pct:.0f}%"
+    elif score <= -70:
+        color, bar_c = "#ff4444", "#ff4444"
+        label = "🔴 ENTRANDO"
+    elif score < -15:
+        color, bar_c = "#cc3333", "#cc3333"
+        label = f"🔴 SHORT  {pct:.0f}%"
+    else:
+        color, bar_c = "#555566", "#252535"
+        label = "⚪ NEUTRAL"
+
+    return html.Div([
+        html.Span(ticker, style={"fontWeight": "700", "fontSize": "11px",
+                                 "color": "#e0e0e0", "minWidth": "38px"}),
+        html.Div([
+            html.Div(style={"height": "4px", "background": "#1a1a2e",
+                            "borderRadius": "2px", "marginBottom": "3px",
+                            "overflow": "hidden"},
+                     children=[html.Div(style={"height": "100%",
+                                               "width": f"{pct:.0f}%",
+                                               "background": bar_c,
+                                               "borderRadius": "2px"})]),
+            html.Span(label, style={"fontSize": "9px", "color": color,
+                                    "fontWeight": "600", "letterSpacing": "0.04em"}),
+        ], style={"flex": "1", "marginLeft": "8px"}),
+    ], style={"display": "flex", "alignItems": "center",
+              "padding": "4px 0", "borderBottom": "1px solid #12121f"})
+
+
 @app.callback(
     [Output("bot-balance-val",  "children"),
      Output("bot-log",          "children"),
@@ -1553,14 +1625,17 @@ def cb_detail(_, tf, pathname):
      Output("mtf-1w",           "children"),
      Output("mtf-1d",           "children"),
      Output("mtf-4h",           "children"),
-     Output("mtf-direccion",    "children")],
+     Output("mtf-direccion",    "children"),
+     Output("panel-senales-mini", "children")],
     Input("tick-bot-status", "n_intervals"),
 )
 def cb_bot_status(_):
     with _bot_lock:
-        bal = _bot_status["balance"]
-        log = list(_bot_status["log"])
-        mtf = dict(_bot_status.get("mtf", {}))
+        bal      = _bot_status["balance"]
+        log      = list(_bot_status["log"])
+        mtf      = dict(_bot_status.get("mtf", {}))
+        scores   = dict(_bot_status.get("scores", {}))
+        activos_sel = list(_bot_status.get("activos", []))
 
     bal_txt   = f"${bal:,.2f}" if isinstance(bal, float) else "–"
     log_items = [
@@ -1604,12 +1679,25 @@ def cb_bot_status(_):
         else:
             mtf_dir = "⏳ ESPERAR — sin dirección clara"
 
-    return bal_txt, log_items, tg_txt, tg_style, mtf_1w_txt, mtf_1d_txt, mtf_4h_txt, mtf_dir
+    # ── Panel senales mini ────────────────────────────────────────────────────
+    activos_sel = activos_sel or []
+    if not activos_sel:
+        senales = html.Div("Selecciona activos arriba",
+                           style={"color": "#6a6a80", "fontSize": "10px", "padding": "4px 0"})
+    elif not scores:
+        senales = html.Div("⏳ Inicia el bot para ver señales",
+                           style={"color": "#6a6a80", "fontSize": "10px", "padding": "4px 0"})
+    else:
+        senales = html.Div([_senal_card(a, scores.get(a)) for a in activos_sel])
+
+    return bal_txt, log_items, tg_txt, tg_style, mtf_1w_txt, mtf_1d_txt, mtf_4h_txt, mtf_dir, senales
 
 
 if __name__ == "__main__":
     print("=" * 50)
     print("  AERO BOT PRO  —  Elite v2.0")
     print("  http://localhost:8051")
+    print(f"  [CHECK] Label activos ES: {TRANSLATIONS['es']['assets']}")
+    print(f"  [CHECK] panel-senales-mini: OK")
     print("=" * 50)
     app.run(debug=False, port=8051, host="0.0.0.0", use_reloader=False)
