@@ -2195,7 +2195,8 @@ def toggle_modal_historial(open_clicks, close_clicks):
     if not callback_context.triggered:
         return {"display": "none"}
     trigger = callback_context.triggered[0]["prop_id"].split(".")[0]
-    if trigger == "btn-historial":
+    # Guard: solo abrir si hay al menos 1 click real en el botón
+    if trigger == "btn-historial" and open_clicks and open_clicks > 0:
         return {"display": "block"}
     return {"display": "none"}
 
