@@ -1578,6 +1578,15 @@ def _pagina_principal():
                 html.Div(className="separador-dorado"),
                 html.Button(id="btn-bot", children="INICIAR BOT",
                             className="btn-principal", n_clicks=0),
+                html.Button(id="btn-historial", children="📋 Historial de Trades",
+                            n_clicks=0, style={
+                                "width": "100%", "marginTop": "6px",
+                                "padding": "9px 0", "fontSize": "11px",
+                                "fontWeight": "700", "letterSpacing": "0.1em",
+                                "background": "#0d0d1a", "color": "#f0c040",
+                                "border": "1px solid #f0c040", "borderRadius": "4px",
+                                "cursor": "pointer",
+                            }),
                 html.Div(className="seccion-control", style={"marginTop": "8px"}, children=[
                     html.Div(className="seccion-titulo", children="Telegram"),
                     html.Div(className="stat-fila", children=[
@@ -1673,6 +1682,56 @@ app.layout = html.Div([
         html.Span("- Jesse Livermore", className="autor"),
     ]),
     html.Div(id="page-content"),
+
+    # ── MODAL HISTORIAL DE TRADES (siempre en DOM, visible/oculto por callback) ──
+    html.Div(id="modal-historial", style={"display": "none"}, children=[
+        html.Div(style={
+            "position": "fixed", "top": "0", "left": "0",
+            "width": "100%", "height": "100%",
+            "background": "rgba(0,0,0,0.88)",
+            "zIndex": "9999",
+            "display": "flex", "alignItems": "center", "justifyContent": "center",
+        }, children=[
+            html.Div(style={
+                "background": "#0d0d1a",
+                "border": "1px solid #f0c040",
+                "borderRadius": "8px",
+                "width": "92%", "maxWidth": "960px",
+                "maxHeight": "82vh",
+                "display": "flex", "flexDirection": "column",
+                "overflow": "hidden",
+                "boxShadow": "0 0 40px rgba(240,192,64,0.15)",
+            }, children=[
+                # Header del modal
+                html.Div(style={
+                    "display": "flex", "alignItems": "center",
+                    "justifyContent": "space-between",
+                    "padding": "14px 20px",
+                    "borderBottom": "1px solid #1e1e30",
+                    "background": "#080812",
+                }, children=[
+                    html.Div(style={"display": "flex", "alignItems": "center", "gap": "10px"}, children=[
+                        html.Span("📋", style={"fontSize": "18px"}),
+                        html.Span("HISTORIAL DE TRADES", style={
+                            "fontSize": "13px", "fontWeight": "700",
+                            "letterSpacing": "0.15em", "color": "#f0c040",
+                        }),
+                    ]),
+                    html.Button("✕", id="btn-cerrar-historial", n_clicks=0, style={
+                        "background": "none", "border": "1px solid #333",
+                        "color": "#888", "fontSize": "16px",
+                        "cursor": "pointer", "borderRadius": "4px",
+                        "padding": "2px 8px", "lineHeight": "1.4",
+                    }),
+                ]),
+                # Cuerpo — tabla de trades
+                html.Div(id="historial-tabla", style={
+                    "overflowY": "auto", "padding": "12px 16px",
+                    "flex": "1",
+                }),
+            ]),
+        ]),
+    ]),
 ])
 
 # ─── HELPERS DE CALLBACK ──────────────────────────────────────────────────────
@@ -2122,6 +2181,154 @@ def cb_bot_status(_):
             mtf_dir, mtf_adv_txt, mtf_adv_style,
             aero_apal, aero_racha, aero_lock, senales)
     
+# ─── MODAL HISTORIAL — CALLBACKS ─────────────────────────────────────────────
+
+@app.callback(
+    Output("modal-historial", "style"),
+    [Input("btn-historial", "n_clicks"),
+     Input("btn-cerrar-historial", "n_clicks")],
+    prevent_initial_call=True,
+)
+def toggle_modal_historial(open_clicks, close_clicks):
+    """Abre o cierra el modal de historial de trades."""
+    from dash import callback_context
+    if not callback_context.triggered:
+        return {"display": "none"}
+    trigger = callback_context.triggered[0]["prop_id"].split(".")[0]
+    if trigger == "btn-historial":
+        return {"display": "block"}
+    return {"display": "none"}
+
+
+@app.callback(
+    Output("historial-tabla", "children"),
+    Input("modal-historial", "style"),
+    prevent_initial_call=True,
+)
+def cargar_historial(modal_style):
+    """Carga y renderiza los trades cuando el modal se abre."""
+    if not modal_style or modal_style.get("display") == "none":
+        from dash.exceptions import PreventUpdate
+        raise PreventUpdate
+
+    try:
+        trades = []
+        if os.path.exists(_TRADES_FILE):
+            with open(_TRADES_FILE, encoding="utf-8") as f:
+                trades = json.load(f)
+    except Exception:
+        trades = []
+
+    if not trades:
+        return html.Div("Sin trades registrados aún. Los trades aparecerán aquí después de la primera operación.", style={
+            "color": "#555", "fontSize": "13px", "textAlign": "center",
+            "padding": "40px 20px",
+        })
+
+    # ── Resumen en la parte superior ─────────────────────────────────────────
+    total    = len(trades)
+    ganancias = sum(1 for t in trades if t.get("pnl_pct", 0) > 0)
+    perdidas  = total - ganancias
+    pnl_total = sum(t.get("pnl_pct", 0) for t in trades)
+    win_rate  = (ganancias / total * 100) if total else 0
+
+    def _pnl_color(v):
+        return "#00ff88" if v > 0 else "#ff3355" if v < 0 else "#888"
+
+    resumen = html.Div(style={
+        "display": "flex", "gap": "12px", "marginBottom": "14px",
+        "flexWrap": "wrap",
+    }, children=[
+        _stat_pill("Total Trades", str(total), "#888"),
+        _stat_pill("Win Rate", f"{win_rate:.0f}%", "#00ff88" if win_rate >= 50 else "#ff3355"),
+        _stat_pill("Ganancias", str(ganancias), "#00ff88"),
+        _stat_pill("Pérdidas", str(perdidas), "#ff3355"),
+        _stat_pill("P&L Acum.", f"{pnl_total:+.2f}%", _pnl_color(pnl_total)),
+    ])
+
+    # ── Cabecera de la tabla ──────────────────────────────────────────────────
+    _th = lambda txt, flex=1: html.Div(txt, style={
+        "flex": str(flex), "fontSize": "10px", "fontWeight": "700",
+        "color": "#555", "letterSpacing": "0.1em", "padding": "4px 6px",
+        "textTransform": "uppercase",
+    })
+    header = html.Div(style={
+        "display": "flex", "borderBottom": "1px solid #1e1e30",
+        "marginBottom": "4px", "paddingBottom": "4px",
+    }, children=[
+        _th("Fecha", 1.4), _th("Activo"), _th("Tipo"),
+        _th("Entrada"), _th("Salida"), _th("P&L", 0.8),
+        _th("Motivo", 1.5), _th("Modo", 0.8),
+    ])
+
+    # ── Filas de trades ───────────────────────────────────────────────────────
+    def _fila(trade):
+        ts_raw  = trade.get("timestamp", "")
+        ts      = ts_raw[:16].replace("T", " ") if ts_raw else "–"
+        activo  = trade.get("activo", "–")
+        side    = trade.get("side", "–").upper()
+        entrada = trade.get("entrada")
+        salida  = trade.get("salida")
+        pnl     = trade.get("pnl_pct", 0)
+        motivo  = trade.get("motivo", "–")
+        modo    = trade.get("modo", "–").upper()
+
+        side_color = "#00ff88" if side == "LONG" else "#ff3355"
+        side_ico   = "🟢" if side == "LONG" else "🔴"
+        pnl_color  = "#00ff88" if pnl > 0 else "#ff3355" if pnl < 0 else "#888"
+        pnl_txt    = f"{pnl:+.2f}%" if pnl != 0 else "–"
+        ent_txt    = f"${entrada:,.2f}" if isinstance(entrada, (int, float)) else "–"
+        sal_txt    = f"${salida:,.2f}"  if isinstance(salida,  (int, float)) else "–"
+        modo_color = "#f0c040" if modo == "DEMO" else "#00ff88"
+
+        _td = lambda txt, flex=1, color="#aaa", bold=False: html.Div(txt, style={
+            "flex": str(flex), "fontSize": "11px", "color": color,
+            "padding": "5px 6px", "fontFamily": "monospace",
+            "fontWeight": "700" if bold else "400",
+        })
+
+        return html.Div(style={
+            "display": "flex", "borderBottom": "1px solid #0e0e1c",
+            "alignItems": "center",
+        }, children=[
+            _td(ts, 1.4, "#666"),
+            _td(activo, 1, "#e0e0e0", bold=True),
+            html.Div(f"{side_ico} {side}", style={
+                "flex": "1", "fontSize": "11px", "color": side_color,
+                "fontWeight": "700", "padding": "5px 6px",
+            }),
+            _td(ent_txt),
+            _td(sal_txt),
+            html.Div(pnl_txt, style={
+                "flex": "0.8", "fontSize": "11px", "color": pnl_color,
+                "fontWeight": "700", "padding": "5px 6px", "fontFamily": "monospace",
+            }),
+            _td(motivo, 1.5, "#888"),
+            html.Div(modo, style={
+                "flex": "0.8", "fontSize": "9px", "color": modo_color,
+                "fontWeight": "700", "padding": "5px 6px",
+                "letterSpacing": "0.08em",
+            }),
+        ])
+
+    filas = [_fila(t) for t in trades[:100]]  # máximo 100 en pantalla
+
+    return html.Div([resumen, header] + filas)
+
+
+def _stat_pill(label, value, color):
+    """Pill de resumen para el modal de historial."""
+    return html.Div(style={
+        "background": "#111120", "border": f"1px solid {color}33",
+        "borderRadius": "6px", "padding": "6px 14px",
+        "textAlign": "center",
+    }, children=[
+        html.Div(value, style={"fontSize": "16px", "fontWeight": "700", "color": color}),
+        html.Div(label, style={"fontSize": "9px", "color": "#555", "letterSpacing": "0.08em",
+                               "textTransform": "uppercase", "marginTop": "2px"}),
+    ])
+
+
 if __name__ == "__main__":
     print("=" * 50)
     print(" AERO BOT PRO — Elite v3.0")
