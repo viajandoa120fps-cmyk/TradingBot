@@ -179,7 +179,20 @@ if not raw:
     print(f"[⚠ FALLBACK Binance] {activo} {temporalidad} — BingX no respondió.")
 ```
 
-### 14. Panel de señales por activo — patrón `_señal_card()`
+### 14. Panel de señales — `_bot_status["activos"]` usa `activos_sel` directamente
+El panel de señales muestra exactamente lo que el usuario chequeó en el checklist.
+`_bot_status["activos"]` = `activos_sel or []` — NO se filtra BTC, NO se usa `activos_lista`.
+Si el usuario checkea BTC, aparece en el panel. Si no lo checkea, no aparece.
+El bot loop sigue usando `activos_lista` (que siempre incluye BTC) para el trading — eso no cambia.
+
+```python
+# cb_bot — al iniciar el bot
+activos_lista = ["BTC"] + [a for a in (activos_sel or []) if a != "BTC"]  # bot loop siempre incluye BTC
+with _bot_lock:
+    _bot_status["activos"] = activos_sel or []  # panel muestra exactamente lo chequeado
+```
+
+### 15. Panel de señales por activo — patrón `_senal_card()`
 El panel `panel-señales-mini` muestra una tarjeta por activo seleccionado con barra de progreso hacia el umbral ±70. Los scores se almacenan en `_bot_status["scores"]` (dict `{activo: float}`). El callback `cb_bot_status` recibe `State("checklist-activos", "value")` para saber qué activos renderizar.
 
 ```python

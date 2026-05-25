@@ -180,13 +180,19 @@ El AI que termina su turno llena esta sección antes de cerrar:
 
 ### 🔄 ÚLTIMO HANDOFF
 
-**Fecha:** 25 mayo 2026 (turno 2 — mismo día)
+**Fecha:** 25 mayo 2026 (turno 3 — mismo día)
 **AI que trabajó:** Claude (Anthropic)
-**Commit GitHub:** `f04e6c2`
+**Commit GitHub:** `0552501`
 
 **Qué se resolvió en este turno:**
 
-1. **Bug raíz del `panel-senales-mini` — RESUELTO ✅**
+1. **BTC no aparecía en panel de señales aunque estaba seleccionado — RESUELTO ✅**
+   - Causa: `_bot_status["activos"]` excluía BTC siempre (`if a != "BTC"`)
+   - Fix: cambiar a `activos_sel or []` — el panel refleja exactamente lo que el usuario chequeó
+   - Resultado: BTC aparece con su tarjeta LONG/SHORT/NEUTRAL si está seleccionado ✅
+   - El bot loop sigue usando `activos_lista` (BTC siempre incluido) — solo cambia el panel visual
+
+2. **Bug raíz del `panel-senales-mini` — RESUELTO ✅** (turno anterior)
    - Causa real: la variable `senales` se computaba en `cb_bot_status` pero nunca se incluía en el `return`. Era una línea faltante, no un problema de arquitectura.
    - Fix: `panel-senales-mini` reintegrado como output #12 de `cb_bot_status` (que ya actualizaba correctamente 11 componentes). Eliminado el `cb_panel_senales` separado que tenía `prevent_initial_call=True` y quedaba suprimido en Edge.
    - Resultado: tarjetas de señal visibles con barra de progreso y label LONG/SHORT/NEUTRAL ✅
@@ -202,13 +208,13 @@ El AI que termina su turno llena esta sección antes de cerrar:
    - **REGLA PERMANENTE para esta máquina:** el proceso Python se llama `python3.11`, no `python`.
 
 **Qué avanzó en el roadmap:**
-- Item #1 (panel señales): **✅ COMPLETO** — tarjetas visibles, barra de progreso, LONG/SHORT/NEUTRAL por activo
+- Item #1 (panel señales): **✅ COMPLETO** — tarjetas visibles, barra de progreso, LONG/SHORT/NEUTRAL por activo, BTC incluido si está seleccionado
 
 **Estado al cerrar:**
-- Panel señales funcionando: TRX 🟢 LONG 86%, ADA 🔴 SHORT 98% — confirmado por Eduardo y Kimi
-- Capital "5%" correcto, Stop Loss "−5.0%" correcto, label "CRIPTO BINGX" correcto
-- GitHub sincronizado, commit `f04e6c2`
-- Servidor limpio: UN solo proceso `python3.11` (PID ~10868)
+- Panel señales funcionando con BTC incluido: BTC 🔴 SHORT 57%, SOL ⚪ NEUTRAL, BCH 🔴 SHORT 79% — confirmado por Eduardo
+- Capital "5%" correcto, Stop Loss "−5.0%" correcto, label "CRIPTO BINGX (MAX. 6)" correcto
+- GitHub sincronizado, commit `0552501`
+- Servidor limpio: UN solo proceso `python3.11`
 
 **Para el próximo AI — tarea inmediata:**
 Avanzar en el item #2 del roadmap: **historial de trades persistente**.
