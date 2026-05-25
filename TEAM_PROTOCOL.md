@@ -159,8 +159,9 @@ Lo ya intentado: caché Python eliminado, InPrivate Edge, IDs renombrados a ASCI
 
 | # | Feature | Estado |
 |---|---|---|
-| 1 | Panel señales por activo (`panel-senales-mini`) | 🔴 Bug rendering |
-| 2 | Historial de trades persistente | ⏳ Pendiente |
+| 0 | Fix modal auto-open al recargar página | 🔴 Bug pendiente (fix conocido) |
+| 1 | Panel señales por activo (`panel-senales-mini`) | ✅ Completo |
+| 2 | Historial de trades persistente | ✅ Completo (con bug menor arriba) |
 | 3 | P&L en tiempo real de posición abierta | ⏳ Pendiente |
 | 4 | Refactorizar en módulos (`ui.py`, `indicators.py`, `exchange/`) | ⏳ Pendiente |
 | 5 | Setup wizard para nuevos usuarios | ⏳ Pendiente |
@@ -180,13 +181,24 @@ El AI que termina su turno llena esta sección antes de cerrar:
 
 ### 🔄 ÚLTIMO HANDOFF
 
-**Fecha:** 25 mayo 2026 (turno 4 — mismo día)
+**Fecha:** 25 mayo 2026 (turno 5 — mismo día)
 **AI que trabajó:** Claude (Anthropic)
-**Commit GitHub:** `74915f9`
+**Commit GitHub:** `2f4ff25`
 
 **Qué se resolvió en este turno:**
 
-1. **AERO BOT PRO v3.0 — Rediseño predictivo — IMPLEMENTADO ✅**
+1. **Modal Historial de Trades — IMPLEMENTADO ✅ (con bug menor pendiente)**
+   - Botón "📋 Historial de Trades" debajo de INICIAR BOT/DETENER BOT en panel derecho
+   - Modal flotante con overlay oscuro y borde dorado — siempre en `app.layout` estático
+   - Pills de resumen: Total trades, Win Rate, Ganancias, Pérdidas, P&L acumulado
+   - Tabla: fecha, activo, tipo LONG/SHORT (colores), entrada, salida, P&L%, motivo, modo
+   - Cierre con botón ✕
+   - Confirmado por Eduardo: abre al hacer clic ✅, cierra con ✕ ✅, muestra datos correctos ✅
+   - **BUG PENDIENTE**: el modal se abre solo al recargar la página (Eduardo decidió dejarlo para después)
+   - Causa del bug: `btn-historial` está en layout dinámico (`_pagina_principal()`). Edge dispara el callback al crear el componente aunque tenga `prevent_initial_call=True`.
+   - **Fix correcto (no aplicado aún):** mover `btn-historial` al layout estático (`app.layout`), fuera de `page-content`. Cambio quirúrgico de ~10 líneas.
+
+2. **AERO BOT PRO v3.0 — Rediseño predictivo — IMPLEMENTADO ✅**
 
    **`calcular_score()` v3 — Anticipatorio:**
    - EMA: mide slope (pendiente %) en las últimas 3 velas + aceleración (slope actual > slope anterior)
@@ -228,10 +240,13 @@ El AI que termina su turno llena esta sección antes de cerrar:
 - Servidor: reiniciar para aplicar cambios
 
 **Para el próximo AI — tarea inmediata:**
-Item #2 del roadmap: **Historial de trades persistente**
-- `trades_history.json` y `_registrar_trade()` ya existen en main.py
-- Falta: panel visual en el dashboard (propuesta: tab separado "📋 Historial" o sección en panel derecho con los últimos 10 trades — activo, tipo, precio entrada/salida, P&L, fecha)
-- Verificar primero si el v3.0 funciona bien (pedir a Eduardo que inicie el bot y confirme que el panel MTF v3 muestra datos)
+**Fix bug modal auto-open** (10 minutos, antes de cualquier otra cosa):
+- El modal de historial se abre solo al recargar la página
+- Causa: `btn-historial` está dentro de `_pagina_principal()` (layout dinámico) → Edge dispara el callback al crearla
+- Fix: mover el botón `btn-historial` al `app.layout` estático (fuera de `page-content`), colocándolo en una posición absoluta/fija sobre la pantalla o directamente en el layout
+- Alternativa más simple: poner el botón justo antes de `html.Div(id="page-content")` en `app.layout`, con posición fija en la esquina inferior derecha de la pantalla
+
+Después del fix, continuar con **Item #3: P&L en tiempo real de la posición abierta**
 
 **Para el próximo AI — comando correcto para matar el servidor en esta máquina:**
 ```powershell

@@ -410,6 +410,7 @@ Si se necesita guardar una API key externa (Kimi, OpenAI, etc.), crear un archiv
 - [x] Panel señales mini por activo (`panel-senales-mini`) — IMPLEMENTADO y FUNCIONANDO (mayo 2026)
 - [x] BingX data source fix — API keys pasadas correctamente, logging de fallback — IMPLEMENTADO (mayo 2026)
 - [x] AERO BOT PRO v3.0 — `calcular_score()` anticipatorio + `_analizar_mtf()` v3 (4H predice, 2H confirma, 1W/1D penalizan) — IMPLEMENTADO (mayo 2026)
-- [ ] Historial de trades persistente — PRÓXIMO (estructura en `trades_history.json` existe)
+- [x] Historial de trades — modal implementado con tabla completa y pills de resumen (mayo 2026)
+- [ ] **BUG PENDIENTE: modal se abre solo al recargar página** — mover `btn-historial` del layout dinámico al estático (`app.layout`) para que `prevent_initial_call=True` funcione correctamente en Edge
 - [ ] P&L en tiempo real de la posición abierta
 - [ ] Migrar VP a TradingView Lightweight Charts (mejor interacción Y-axis)
