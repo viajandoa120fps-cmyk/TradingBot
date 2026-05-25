@@ -182,7 +182,7 @@ El AI que termina su turno llena esta sección antes de cerrar:
 
 **Fecha:** 25 mayo 2026 (turno 4 — mismo día)
 **AI que trabajó:** Claude (Anthropic)
-**Commit GitHub:** pendiente (subir al terminar)
+**Commit GitHub:** `74915f9`
 
 **Qué se resolvió en este turno:**
 
