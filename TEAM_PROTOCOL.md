@@ -180,47 +180,58 @@ El AI que termina su turno llena esta sección antes de cerrar:
 
 ### 🔄 ÚLTIMO HANDOFF
 
-**Fecha:** 25 mayo 2026 (turno 3 — mismo día)
+**Fecha:** 25 mayo 2026 (turno 4 — mismo día)
 **AI que trabajó:** Claude (Anthropic)
-**Commit GitHub:** `0552501`
+**Commit GitHub:** pendiente (subir al terminar)
 
 **Qué se resolvió en este turno:**
 
-1. **BTC no aparecía en panel de señales aunque estaba seleccionado — RESUELTO ✅**
-   - Causa: `_bot_status["activos"]` excluía BTC siempre (`if a != "BTC"`)
-   - Fix: cambiar a `activos_sel or []` — el panel refleja exactamente lo que el usuario chequeó
-   - Resultado: BTC aparece con su tarjeta LONG/SHORT/NEUTRAL si está seleccionado ✅
-   - El bot loop sigue usando `activos_lista` (BTC siempre incluido) — solo cambia el panel visual
+1. **AERO BOT PRO v3.0 — Rediseño predictivo — IMPLEMENTADO ✅**
 
-2. **Bug raíz del `panel-senales-mini` — RESUELTO ✅** (turno anterior)
-   - Causa real: la variable `senales` se computaba en `cb_bot_status` pero nunca se incluía en el `return`. Era una línea faltante, no un problema de arquitectura.
-   - Fix: `panel-senales-mini` reintegrado como output #12 de `cb_bot_status` (que ya actualizaba correctamente 11 componentes). Eliminado el `cb_panel_senales` separado que tenía `prevent_initial_call=True` y quedaba suprimido en Edge.
-   - Resultado: tarjetas de señal visibles con barra de progreso y label LONG/SHORT/NEUTRAL ✅
+   **`calcular_score()` v3 — Anticipatorio:**
+   - EMA: mide slope (pendiente %) en las últimas 3 velas + aceleración (slope actual > slope anterior)
+   - Squeeze: detecta valleys (mínimo local → giro alcista) y peaks (máximo local → giro bajista)
+   - ADX: busca "fuerza naciente" — ADX estuvo bajo 20 en las últimas 10 velas y ahora sube (tendencia nueva)
+   - VOL Profile y S/R sin cambios
 
-2. **`config.json` malformado — RESUELTO ✅**
-   - Causa: `kimi_api_key` fue appended fuera del objeto JSON (después del `}`), rompiendo el parse completo.
-   - Consecuencias: `_pagina_principal()` fallaba silenciosamente → "Sin Stop Fijo OK", label "ACTIVOS (MÁX. 6)", capital "20%", todo corrompido.
-   - Fix: archivo corregido a JSON válido, línea espuria removida.
+   **`_analizar_mtf()` v3 — 4H predice, 2H confirma, 1W/1D advierten:**
+   - Antes: 1W bloqueaba entradas si estaba en compresión o contrario. Bot paralizaba frecuentemente.
+   - Ahora: 4H sola determina `long_ok`/`short_ok` — opera en la realidad actual del mercado
+   - 2H confirma fuerza: "fuerte" si alinea con 4H, "débil" si no (+ penalización 8 pts)
+   - 1W divergente: penalización 15 pts al score (advierte pero NO bloquea)
+   - 1D divergente: penalización 10 pts al score (advierte pero NO bloquea)
+   - Penalización máxima posible: 33 pts (raro que todos diverjan)
 
-3. **13 procesos zombie `python3.11` — RESUELTO ✅**
-   - Causa: Python en esta máquina corre como `python3.11` (Microsoft Store), no como `python`. Todos los intentos de `Get-Process python | Stop-Process` no mataban nada. Los 13 servidores acumulados bloqueaban el puerto 8051, el primero (con código viejo) siempre ganaba.
-   - Fix: usar `Get-Process python3.11 | Stop-Process` en esta máquina.
-   - **REGLA PERMANENTE para esta máquina:** el proceso Python se llama `python3.11`, no `python`.
+   **Penalización en bot loop:**
+   - Score se calcula primero, luego MTF, luego se aplica la penalización
+   - Si score > 0: `score = max(0, score - pen)` (protege de ir negativo)
+   - Si score < 0: `score = min(0, score + pen)` (protege de ir positivo)
+   - Score ajustado se guarda en `_bot_status["scores"]`
+
+   **UI actualizada:**
+   - Sección "Dirección MTF v3" — 4H y 2H aparecen primero (amarillo, son los que deciden)
+   - 1D y 1W debajo (gris, solo informativo)
+   - `mtf-2h` — nuevo span para el timeframe 2H
+   - `mtf-advertencia` — banner amarillo que aparece solo cuando hay advertencias activas
+   - `mtf-direccion` muestra: "🟢 LONG 4H 💪 2H FUERTE" o "🔴 SHORT 4H ⚡ 2H DÉBIL (−18pts)"
+
+   **`cb_bot_status` — 15 outputs** (antes 12):
+   Agregados: `mtf-2h` children, `mtf-advertencia` children, `mtf-advertencia` style
 
 **Qué avanzó en el roadmap:**
-- Item #1 (panel señales): **✅ COMPLETO** — tarjetas visibles, barra de progreso, LONG/SHORT/NEUTRAL por activo, BTC incluido si está seleccionado
+- Item #1 (panel señales): ✅ COMPLETO (turno anterior)
+- v3.0 predictivo: ✅ COMPLETO — `calcular_score` + `_analizar_mtf` + UI + bot loop
 
 **Estado al cerrar:**
-- Panel señales funcionando con BTC incluido: BTC 🔴 SHORT 57%, SOL ⚪ NEUTRAL, BCH 🔴 SHORT 79% — confirmado por Eduardo
-- Capital "5%" correcto, Stop Loss "−5.0%" correcto, label "CRIPTO BINGX (MAX. 6)" correcto
-- GitHub sincronizado, commit `0552501`
-- Servidor limpio: UN solo proceso `python3.11`
+- Código subido y sintaxis verificada (python3.11 -c "import ast; ...")
+- GitHub: pendiente push (ver abajo)
+- Servidor: reiniciar para aplicar cambios
 
 **Para el próximo AI — tarea inmediata:**
-Avanzar en el item #2 del roadmap: **historial de trades persistente**.
-- El archivo `trades_history.json` ya existe y tiene la estructura básica (ver `_registrar_trade()` en main.py)
-- Falta: panel en el dashboard que muestre los últimos trades con P&L, tipo (LONG/SHORT), activo, precio entrada/salida
-- Proponer: ¿tab separado? ¿sección en el panel derecho? ¿modal?
+Item #2 del roadmap: **Historial de trades persistente**
+- `trades_history.json` y `_registrar_trade()` ya existen en main.py
+- Falta: panel visual en el dashboard (propuesta: tab separado "📋 Historial" o sección en panel derecho con los últimos 10 trades — activo, tipo, precio entrada/salida, P&L, fecha)
+- Verificar primero si el v3.0 funciona bien (pedir a Eduardo que inicie el bot y confirme que el panel MTF v3 muestra datos)
 
 **Para el próximo AI — comando correcto para matar el servidor en esta máquina:**
 ```powershell
@@ -228,10 +239,9 @@ Get-Process python3.11 -ErrorAction SilentlyContinue | Stop-Process -Force -Conf
 ```
 
 **Punto de vista de Claude para Kimi:**
-El sistema está estable ahora. Los bugs que quedaban eran todos consecuencia de dos problemas raíz: config.json roto (que corrompía silenciosamente toda la UI) y el error de nombre de proceso. Con eso resuelto, la arquitectura de callbacks de Dash está funcionando correctamente para el layout dinámico. No hay que mover nada al layout estático — era la hipótesis equivocada. El problema era operacional, no arquitectónico.
+El cambio v3.0 es arquitectónico, no cosmético. La lógica anterior bloqueaba entradas cuando 1W estaba en compresión — lo cual es común (el semanal tarda semanas en moverse). Resultado: el bot rara vez entraba aunque el 4H y 2H tuvieran señal clara. El nuevo modelo invierte la jerarquía: el 4H ve la realidad actual, el 1W solo da contexto. Esto debería aumentar la frecuencia de señales válidas sin sacrificar calidad.
 
-**Punto de vista de Claude para Kimi:**
-El problema recurrente de rendering en Edge (3 elementos distintos con el mismo síntoma) apunta a que Dash tiene un comportamiento inconsistente con layouts dinámicos en Edge. No es un bug de lógica Python — es un problema de cómo Dash/React sincroniza el DOM en este browser. La solución arquitectónica limpia es sacar los elementos críticos del layout dinámico y ponerlos en el estático.
+La penalización es conservadora intencionalmente: máximo 33 pts. El umbral de entrada es 70 pts. Un score v3 típico en señal fuerte vale ~70-80 pts. Con 33 de penalización baja a ~37-47 — no entra. Esto fuerza al bot a buscar señales bien alineadas incluso dentro del nuevo modelo permisivo. Eduardo puede ajustar los valores (15/10/8) en el código si quiere más o menos agresividad.
 
 ---
 

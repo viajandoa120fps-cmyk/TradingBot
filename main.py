@@ -420,7 +420,7 @@ ACTIVOS_GRID = [
 ]
 
 TF_MAP = {
-    "1W": "1w", "1D": "1d", "4H": "4h", "1H": "1h", "15m": "15m",
+    "1W": "1w", "1D": "1d", "4H": "4h", "2H": "2h", "1H": "1h", "15m": "15m",
 }
 
 # ─── BOT GLOBAL STATE ─────────────────────────────────────────────────────────
@@ -517,37 +517,45 @@ def _volume_profile(df, bins=90):
 
 def _analizar_mtf(activo, ema_comp_pct=1.0):
     """
-    Cascade MTF: 1W (master direction) → 1D (filter) → 4H (entry trigger).
-    Reglas:
-    - 1W bullish (sep > +ema_comp_pct AND mom > 0) → solo LONGS permitidos
-    - 1W bearish (sep < -ema_comp_pct AND mom < 0) → solo SHORTS permitidos
-    - 1W compresión → esperar, sin entradas
-    - 1D debe confirmar: momentum en la misma dirección que 1W
-    - 4H debe confirmar: sep > umbral AND momentum en la misma dirección
-    - long_ok / short_ok son True solo cuando los 3 TF están alineados
+    MTF v3 — Predictivo: 4H predice, 2H confirma, 1W/1D advierten.
+    Filosofía v3:
+    - 4H: determina long_ok / short_ok — sola, sin depender de 1W/1D
+    - 2H: confirma fuerza ("fuerte" si alineado con 4H, "débil" si no)
+    - 1W divergente: penalización 15 pts al score — advierte pero NO bloquea
+    - 1D divergente: penalización 10 pts al score — advierte pero NO bloquea
+    - 2H no confirma: penalización 8 pts adicionales
+    El bot opera en la realidad actual (4H+2H), no espera alineación global.
     """
     _default = {
         "activo": activo,
         "1W": {"estado": "–", "sep": 0.0, "mom": 0.0},
         "1D": {"estado": "–", "sep": 0.0, "mom": 0.0},
         "4H": {"estado": "–", "sep": 0.0, "mom": 0.0},
+        "2H": {"estado": "–", "sep": 0.0, "mom": 0.0},
         "direccion": "esperar",
         "long_ok": False,
         "short_ok": False,
+        "fuerza": "–",
+        "advertencia": "",
+        "penalizacion": 0,
     }
     try:
-        # Fetch paralelo: 3 TF a la vez
-        with ThreadPoolExecutor(max_workers=3) as pool:
+        # Fetch paralelo: 4 TF a la vez
+        with ThreadPoolExecutor(max_workers=4) as pool:
             f1w = pool.submit(obtener_datos, activo, "1W", 100)
             f1d = pool.submit(obtener_datos, activo, "1D", 100)
             f4h = pool.submit(obtener_datos, activo, "4H", 100)
-            df_1w, df_1d, df_4h = f1w.result(), f1d.result(), f4h.result()
+            f2h = pool.submit(obtener_datos, activo, "2H", 100)
+            df_1w = f1w.result()
+            df_1d = f1d.result()
+            df_4h = f4h.result()
+            df_2h = f2h.result()
 
-        if any(df is None or df.empty for df in [df_1w, df_1d, df_4h]):
+        if any(df is None or df.empty for df in [df_1w, df_1d, df_4h, df_2h]):
             return _default
 
         def _tf_info(df):
-            """Devuelve estado, sep% y mom del último cierre."""
+            """Devuelve dict con estado, sep% y mom del último cierre."""
             u = df.iloc[-1]
             sep = (float(u["EMA10"]) - float(u["EMA55"])) / float(u["EMA55"]) * 100
             mom = float(u["momentum"])
@@ -557,32 +565,62 @@ def _analizar_mtf(activo, ema_comp_pct=1.0):
                 estado = "bajista"
             else:
                 estado = "compresion"
-            return {"estado": estado, "sep": round(sep, 2), "mom": round(mom, 2)}, mom
+            return {"estado": estado, "sep": round(sep, 2), "mom": round(mom, 2)}
 
-        r1w, mom_1w = _tf_info(df_1w)
-        r1d, mom_1d = _tf_info(df_1d)
-        r4h, mom_4h = _tf_info(df_4h)
+        r1w = _tf_info(df_1w)
+        r1d = _tf_info(df_1d)
+        r4h = _tf_info(df_4h)
+        r2h = _tf_info(df_2h)
 
-        result = {**_default, "1W": r1w, "1D": r1d, "4H": r4h}
+        result = {**_default, "1W": r1w, "1D": r1d, "4H": r4h, "2H": r2h}
 
-        dir_1w = r1w["estado"]
+        # ── PASO 1: 4H PREDICE — única fuente de long_ok / short_ok ───────────
+        if r4h["estado"] == "alcista":
+            result["long_ok"]    = True
+            result["direccion"]  = "long"
+        elif r4h["estado"] == "bajista":
+            result["short_ok"]   = True
+            result["direccion"]  = "short"
+        else:
+            result["direccion"]  = "esperar"
 
-        if dir_1w == "alcista":
-            result["direccion"] = "long"
-            # 1D: momentum positivo (giro iniciado o confirmado)
-            if mom_1d > 0:
-                # 4H: EMAs separadas alcistas Y momentum positivo
-                if r4h["sep"] > ema_comp_pct and mom_4h > 0:
-                    result["long_ok"] = True
+        # ── PASO 2: 2H CONFIRMA — fuerza de la señal ──────────────────────────
+        penalizacion = 0
+        advertencias = []
 
-        elif dir_1w == "bajista":
-            result["direccion"] = "short"
-            # 1D: momentum negativo
-            if mom_1d < 0:
-                # 4H: EMAs separadas bajistas Y momentum negativo
-                if r4h["sep"] < -ema_comp_pct and mom_4h < 0:
-                    result["short_ok"] = True
-            # else: 1W en compresión → esperar (ambos False)
+        if result["long_ok"]:
+            if r2h["estado"] == "alcista":
+                result["fuerza"] = "fuerte"
+            else:
+                result["fuerza"] = "débil"
+                penalizacion += 8
+                advertencias.append("2H sin confirmar")
+        elif result["short_ok"]:
+            if r2h["estado"] == "bajista":
+                result["fuerza"] = "fuerte"
+            else:
+                result["fuerza"] = "débil"
+                penalizacion += 8
+                advertencias.append("2H sin confirmar")
+
+        # ── PASO 3: 1W ADVIERTE — no bloquea, solo penaliza ───────────────────
+        if result["long_ok"] and r1w["estado"] == "bajista":
+            penalizacion += 15
+            advertencias.append("⚠ 1W bajista")
+        elif result["short_ok"] and r1w["estado"] == "alcista":
+            penalizacion += 15
+            advertencias.append("⚠ 1W alcista")
+
+        # ── PASO 4: 1D ADVIERTE — no bloquea, solo penaliza ───────────────────
+        if result["long_ok"] and r1d["estado"] == "bajista":
+            penalizacion += 10
+            advertencias.append("⚠ 1D bajista")
+        elif result["short_ok"] and r1d["estado"] == "alcista":
+            penalizacion += 10
+            advertencias.append("⚠ 1D alcista")
+
+        result["penalizacion"] = penalizacion
+        result["advertencia"]  = " | ".join(advertencias) if advertencias else ""
 
         return result
 
@@ -590,24 +628,84 @@ def _analizar_mtf(activo, ema_comp_pct=1.0):
         return _default
 
 def calcular_score(df):
-    u, prev = df.iloc[-1], df.iloc[-2] if len(df) > 1 else df.iloc[-1]
+    """
+    Score anticipatorio v3 — predice dirección futura, no describe el presente.
+    Filosofía: pendiente (slope) de EMA, valleys/peaks de Squeeze, ADX naciente.
+    Parámetros: slope sobre 3 velas, ADX mínimo en últimas 10 velas.
+    """
+    if len(df) < 10:
+        return 0, {}
+
+    u = df.iloc[-1]
     pts, gr = 0, {}
 
-    bull_ema = bool(u["EMA10"] > u["EMA55"])
-    pts += 30 if bull_ema else -30
-    gr["EMA"] = {"estado": "on" if bull_ema else "war",
-                 "valor": f"{'▲' if bull_ema else '▼'} {u['EMA10']:.0f}"}
+    # ── EMA SLOPE ANTICIPATORIO ───────────────────────────────────────────────
+    # Pendiente = cambio % de EMA10 en 3 velas. Señal: pendiente positiva Y acelerando.
+    ema10_now   = float(df.iloc[-1]["EMA10"])
+    ema10_p3    = float(df.iloc[-4]["EMA10"])   # 3 velas atrás
+    ema10_p6    = float(df.iloc[-7]["EMA10"])   # 6 velas atrás (slope anterior)
+    slope_now   = (ema10_now - ema10_p3) / ema10_p3 * 100
+    slope_prev  = (ema10_p3  - ema10_p6) / ema10_p6 * 100
 
-    mom, growing = float(u["momentum"]), bool(u["momentum"] > float(prev["momentum"]))
-    bull_mom = mom > 0
-    pts += 25 if bull_mom else -25
-    gr["SQUEEZE"] = {"estado": "on" if (bull_mom and growing) else "war" if not bull_mom else "off",
-                     "valor": f"{'▲' if growing else '▼'} {mom:.1f}"}
+    bull_ema_strong = slope_now > 0 and slope_now > slope_prev   # acelerando al alza
+    bear_ema_strong = slope_now < 0 and slope_now < slope_prev   # acelerando a la baja
 
-    adx = float(u["ADX"])
-    pts += 10 if adx >= 23 else -10
-    gr["ADX"] = {"estado": "on" if adx >= 23 else "off", "valor": f"{adx:.1f}"}
+    if bull_ema_strong:
+        pts += 30; ema_est = "on";  ema_val = f"▲ slope {slope_now:+.3f}%"
+    elif slope_now > 0:
+        pts += 12; ema_est = "off"; ema_val = f"↗ slope {slope_now:+.3f}%"
+    elif bear_ema_strong:
+        pts -= 30; ema_est = "war"; ema_val = f"▼ slope {slope_now:+.3f}%"
+    else:
+        pts -= 12; ema_est = "war"; ema_val = f"↘ slope {slope_now:+.3f}%"
+    gr["EMA"] = {"estado": ema_est, "valor": ema_val}
 
+    # ── SQUEEZE MOMENTUM — VALLEY/PEAK + ACELERACIÓN ──────────────────────────
+    # Señal bull: valle (giro al alza) O momentum positivo acelerando.
+    # Señal bear: pico (giro a la baja) O momentum negativo acelerando.
+    mom_now   = float(df.iloc[-1]["momentum"])
+    mom_prev  = float(df.iloc[-2]["momentum"])
+    mom_prev2 = float(df.iloc[-3]["momentum"])
+
+    bull_valley = mom_prev2 > mom_prev and mom_prev < mom_now  # mínimo local en mom_prev
+    bull_accel  = mom_now > mom_prev and mom_prev > 0          # acelerando positivo
+    bull_mom    = bull_valley or bull_accel
+
+    bear_peak  = mom_prev2 < mom_prev and mom_prev > mom_now   # máximo local en mom_prev
+    bear_accel = mom_now < mom_prev and mom_prev < 0           # acelerando negativo
+    bear_mom   = bear_peak or bear_accel
+
+    growing = bool(mom_now > mom_prev)
+    if bull_mom:
+        pts += 25; mom_est = "on"
+    elif bear_mom:
+        pts -= 25; mom_est = "war"
+    elif mom_now > 0:
+        pts += 10; mom_est = "off"
+    else:
+        pts -= 10; mom_est = "war"
+    gr["SQUEEZE"] = {"estado": mom_est, "valor": f"{'▲' if growing else '▼'} {mom_now:.1f}"}
+
+    # ── ADX — FUERZA NACIENTE (anticipatorio) ─────────────────────────────────
+    # Señal: ADX cayó bajo 20 (sin tendencia) y ahora empieza a subir → nueva fuerza.
+    adx_now    = float(df.iloc[-1]["ADX"])
+    adx_prev   = float(df.iloc[-2]["ADX"])
+    adx_min10  = float(df["ADX"].iloc[-10:].min())   # mínimo en últimas 10 velas
+
+    adx_emerging = adx_min10 < 20 and adx_now > adx_prev    # naciendo desde mínimo
+    adx_strong   = adx_now >= 25 and adx_now > adx_prev     # establecida y creciendo
+
+    if adx_emerging:
+        pts += 10; adx_est = "on";  adx_txt = f"↑ {adx_now:.1f} (naciendo)"
+    elif adx_strong:
+        pts +=  5; adx_est = "on";  adx_txt = f"↑ {adx_now:.1f}"
+    elif adx_now < 20:
+        pts -= 10; adx_est = "off"; adx_txt = f"↓ {adx_now:.1f} (sin fuerza)"
+    else:
+        pts +=  0; adx_est = "off"; adx_txt = f"{adx_now:.1f}"
+    gr["ADX"] = {"estado": adx_est, "valor": adx_txt}
+
+    # ── VOLUME PROFILE POC (sin cambios) ─────────────────────────────────────
     _, _, poc = _volume_profile(df)
     sobre_poc = bool(u["close"] > poc)
     pct_poc = (u["close"] - poc) / poc * 100
@@ -615,8 +713,9 @@ def calcular_score(df):
     gr["VOL PROFILE"] = {"estado": "on" if sobre_poc else "war",
                          "valor": f"{'↑' if sobre_poc else '↓'}{abs(pct_poc):.1f}%"}
 
+    # ── SOPORTE / RESISTENCIA (sin cambios) ──────────────────────────────────
     max_idx = argrelextrema(df["high"].values, np.greater, order=10)[0]
-    min_idx = argrelextrema(df["low"].values, np.less, order=10)[0]
+    min_idx = argrelextrema(df["low"].values, np.less,    order=10)[0]
     precio = float(u["close"])
     sr_pts, sr_val, sr_est = 0, "-", "off"
     if len(min_idx):
@@ -903,10 +1002,17 @@ def _bot_loop(activos_lista, tf, capital_pct):
                 if df is None or df.empty:
                     continue
                 score, _ = calcular_score(df)
+                mtf = _analizar_mtf(activo, ema_comp_pct)
+
+                # Aplicar penalización MTF v3: reduce abs(score) sin cambiar signo
+                pen = mtf.get("penalizacion", 0)
+                if score > 0:
+                    score = max(0, score - pen)
+                elif score < 0:
+                    score = min(0, score + pen)
+
                 with _bot_lock:
                     _bot_status["scores"][activo] = score
-                mtf = _analizar_mtf(activo, ema_comp_pct)
-                with _bot_lock:
                     _bot_status["mtf"] = mtf
                 simbolo = SYMBOL_MAP.get(activo, f"{activo}/USDT")
                 pos_actual = posicion[activo]
@@ -1408,12 +1514,19 @@ def _pagina_principal():
                 ]),
                 html.Div(className="separador-dorado"),
                 html.Div(className="seccion-control", children=[
-                    html.Div(className="seccion-titulo", children="Dirección MTF"),
+                    html.Div(className="seccion-titulo", children="Dirección MTF v3"),
                     html.Div(className="stat-fila", children=[
-                        html.Span("1W", className="stat-nombre",
+                        html.Span("4H", className="stat-nombre",
                                   style={"fontSize": "10px", "fontWeight": "700",
-                                         "letterSpacing": "0.1em"}),
-                        html.Span("–", id="mtf-1w", className="stat-valor",
+                                         "letterSpacing": "0.1em", "color": "#f0c040"}),
+                        html.Span("–", id="mtf-4h", className="stat-valor",
+                                  style={"fontSize": "11px", "fontFamily": "monospace"}),
+                    ]),
+                    html.Div(className="stat-fila", children=[
+                        html.Span("2H", className="stat-nombre",
+                                  style={"fontSize": "10px", "fontWeight": "700",
+                                         "letterSpacing": "0.1em", "color": "#f0c040"}),
+                        html.Span("–", id="mtf-2h", className="stat-valor",
                                   style={"fontSize": "11px", "fontFamily": "monospace"}),
                     ]),
                     html.Div(className="stat-fila", children=[
@@ -1424,10 +1537,10 @@ def _pagina_principal():
                                   style={"fontSize": "11px", "fontFamily": "monospace"}),
                     ]),
                     html.Div(className="stat-fila", children=[
-                        html.Span("4H", className="stat-nombre",
+                        html.Span("1W", className="stat-nombre",
                                   style={"fontSize": "10px", "fontWeight": "700",
                                          "letterSpacing": "0.1em"}),
-                        html.Span("–", id="mtf-4h", className="stat-valor",
+                        html.Span("–", id="mtf-1w", className="stat-valor",
                                   style={"fontSize": "11px", "fontFamily": "monospace"}),
                     ]),
                     html.Div(id="mtf-direccion", style={
@@ -1437,6 +1550,14 @@ def _pagina_principal():
                         "background": "#111120", "borderRadius": "4px",
                         "border": "1px solid #2a2a3a",
                     }, children="⏳ Bot detenido"),
+                    html.Div(id="mtf-advertencia", style={
+                        "display": "none",
+                        "marginTop": "4px", "padding": "4px 6px",
+                        "background": "#1a1000", "borderRadius": "4px",
+                        "border": "1px solid #f0c040", "fontSize": "10px",
+                        "color": "#f0c040", "textAlign": "center",
+                        "letterSpacing": "0.04em",
+                    }),
                 ]),
                 html.Div(className="separador-dorado"),
                 html.Div(className="seccion-control", children=[
@@ -1887,7 +2008,10 @@ def _senal_card(ticker, score):
      Output("mtf-1w", "children"),
      Output("mtf-1d", "children"),
      Output("mtf-4h", "children"),
+     Output("mtf-2h", "children"),
      Output("mtf-direccion", "children"),
+     Output("mtf-advertencia", "children"),
+     Output("mtf-advertencia", "style"),
      Output("aero-ladder-val", "children"),
      Output("aero-racha-val", "children"),
      Output("aero-lock-val", "children"),
@@ -1916,9 +2040,9 @@ def cb_bot_status(_):
     tg_txt = "✅ Conectado" if tg_ok else "⚠ No configurado"
     tg_style = {"color": "#00ff88", "fontSize": "12px"} if tg_ok else                {"color": "#f0c040", "fontSize": "12px"}
 
-    # ── MTF display ────────────────────────────────────────────────────────────
+    # ── MTF display v3 ─────────────────────────────────────────────────────────
     def _fmt_tf(data):
-        if not data:
+        if not data or data.get("estado") == "–":
             return "–"
         est = data.get("estado", "–")
         sep = data.get("sep", 0.0)
@@ -1931,19 +2055,40 @@ def cb_bot_status(_):
     mtf_1w_txt = _fmt_tf(mtf.get("1W"))
     mtf_1d_txt = _fmt_tf(mtf.get("1D"))
     mtf_4h_txt = _fmt_tf(mtf.get("4H"))
+    mtf_2h_txt = _fmt_tf(mtf.get("2H"))
 
     if not mtf:
         mtf_dir = "⏳ Bot detenido"
+        mtf_adv_txt  = ""
+        mtf_adv_style = {"display": "none"}
     else:
-        dir_ = mtf.get("direccion", "esperar")
-        lo = mtf.get("long_ok", False)
-        so = mtf.get("short_ok", False)
-        if dir_ == "long":
-            mtf_dir = "🟢 BUSCANDO LONG ⛔ SHORT OFF" if lo else "🟡 LONG pendiente 4H ⛔ SHORT OFF"
-        elif dir_ == "short":
-            mtf_dir = "🔴 BUSCANDO SHORT ⛔ LONG OFF" if so else "🟡 SHORT pendiente 4H ⛔ LONG OFF"
+        dir_   = mtf.get("direccion", "esperar")
+        lo     = mtf.get("long_ok",   False)
+        so     = mtf.get("short_ok",  False)
+        fuerza = mtf.get("fuerza",    "–")
+        adv    = mtf.get("advertencia", "")
+        pen    = mtf.get("penalizacion", 0)
+        fuerza_ico = "💪" if fuerza == "fuerte" else "⚡" if fuerza == "débil" else ""
+        pen_txt = f"  (−{pen}pts)" if pen > 0 else ""
+        if dir_ == "long" and lo:
+            mtf_dir = f"🟢 LONG 4H  {fuerza_ico} 2H {fuerza.upper()}{pen_txt}"
+        elif dir_ == "short" and so:
+            mtf_dir = f"🔴 SHORT 4H  {fuerza_ico} 2H {fuerza.upper()}{pen_txt}"
         else:
-            mtf_dir = "⏳ ESPERAR — sin dirección clara"
+            mtf_dir = "⏳ ESPERAR — 4H sin dirección"
+        # Advertencia banner
+        if adv:
+            mtf_adv_txt   = adv
+            mtf_adv_style = {
+                "display": "block", "marginTop": "4px", "padding": "4px 6px",
+                "background": "#1a1000", "borderRadius": "4px",
+                "border": "1px solid #f0c040", "fontSize": "10px",
+                "color": "#f0c040", "textAlign": "center",
+                "letterSpacing": "0.04em",
+            }
+        else:
+            mtf_adv_txt   = ""
+            mtf_adv_style = {"display": "none"}
 
     # ── Panel senales mini ────────────────────────────────────────────────────
     activos_sel = activos_sel or []
@@ -1972,12 +2117,15 @@ def cb_bot_status(_):
         aero_racha = "–"
         aero_lock = "–"
 
-    return bal_txt, log_items, tg_txt, tg_style, mtf_1w_txt, mtf_1d_txt, mtf_4h_txt, mtf_dir, aero_apal, aero_racha, aero_lock, senales
+    return (bal_txt, log_items, tg_txt, tg_style,
+            mtf_1w_txt, mtf_1d_txt, mtf_4h_txt, mtf_2h_txt,
+            mtf_dir, mtf_adv_txt, mtf_adv_style,
+            aero_apal, aero_racha, aero_lock, senales)
     
 if __name__ == "__main__":
     print("=" * 50)
-    print(" AERO BOT PRO — Elite v2.1")
-    print(" AERO LADDER v2 | Max 5X | Profit Lock | Cooldown")
+    print(" AERO BOT PRO — Elite v3.0")
+    print(" MTF v3: 4H predice | 2H confirma | 1W/1D advierten")
     print(" http://localhost:8051")
     print(f" [CHECK] Label activos ES: {TRANSLATIONS['es']['assets']}")
     print(f" [CHECK] panel-senales-mini: OK")

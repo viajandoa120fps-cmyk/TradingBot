@@ -255,9 +255,20 @@ sep = (EMA10 - EMA55) / EMA55 * 100   # separación porcentual
 # abs(sep) < 1%             →  compresión (fiesta terminando)
 ```
 
-### _analizar_mtf() fetch paralelo
-Siempre usa `ThreadPoolExecutor(max_workers=3)` para los 3 TF.
+### _analizar_mtf() v3 — fetch paralelo 4 TF
+Usa `ThreadPoolExecutor(max_workers=4)` para los 4 TF (1W, 1D, 4H, 2H).
 Nunca en serie para no bloquear el bot loop.
+
+**Filosofía v3 — Predictivo, no confirmatorio:**
+- **4H predice**: `long_ok` / `short_ok` depende SOLO de 4H. Sin esperar alineación 1W/1D.
+- **2H confirma**: Si 2H alinea con 4H → `fuerza="fuerte"`. Si no → `fuerza="débil"` + penalización 8 pts.
+- **1W advierte**: Si diverge de la señal 4H → penalización 15 pts (NO bloquea).
+- **1D advierte**: Si diverge de la señal 4H → penalización 10 pts (NO bloquea).
+- La penalización se aplica al score ANTES de guardarlo en `_bot_status["scores"]`.
+
+**Advertencias visibles en UI:**
+- Banner `mtf-advertencia` muestra los avisos activos (amarillo, oculto si no hay).
+- Display `mtf-direccion` muestra fuerza: 💪 FUERTE o ⚡ DÉBIL + penalización total.
 
 ---
 
@@ -275,16 +286,20 @@ _bx_api_secret: str = ""   # cargado al iniciar el proceso (nivel módulo)
 ```
 
 `_bot_status["mtf"]` se actualiza con cada iteración del loop (por activo).
-Estructura devuelta por `_analizar_mtf()`:
+Estructura devuelta por `_analizar_mtf()` v3:
 ```python
 {
-    "activo":    "BTC",
-    "1W":        {"estado": "alcista|bajista|compresion", "sep": float, "mom": float},
-    "1D":        {"estado": ..., "sep": float, "mom": float},
-    "4H":        {"estado": ..., "sep": float, "mom": float},
-    "direccion": "long|short|esperar",
-    "long_ok":   bool,
-    "short_ok":  bool,
+    "activo":      "BTC",
+    "1W":          {"estado": "alcista|bajista|compresion", "sep": float, "mom": float},
+    "1D":          {"estado": ..., "sep": float, "mom": float},
+    "4H":          {"estado": ..., "sep": float, "mom": float},  # PREDICE
+    "2H":          {"estado": ..., "sep": float, "mom": float},  # CONFIRMA
+    "direccion":   "long|short|esperar",
+    "long_ok":     bool,     # True si 4H alcista — sin depender de 1W/1D
+    "short_ok":    bool,     # True si 4H bajista — sin depender de 1W/1D
+    "fuerza":      "fuerte|débil|–",  # fuerte si 2H confirma 4H
+    "advertencia": str,      # ej. "⚠ 1W bajista | 2H sin confirmar"
+    "penalizacion": int,     # pts a restar del abs(score): max 33 (15+10+8)
 }
 ```
 
@@ -391,9 +406,10 @@ Si se necesita guardar una API key externa (Kimi, OpenAI, etc.), crear un archiv
 ## Pendiente (próximas sesiones)
 
 - [x] Bug visual: slider de capital — RESUELTO (era config.json malformado, mayo 2026)
-- [x] MTF guardarrail — IMPLEMENTADO (mayo 2026)
+- [x] MTF guardarrail — IMPLEMENTADO y ACTUALIZADO a v3 (mayo 2026)
 - [x] Panel señales mini por activo (`panel-senales-mini`) — IMPLEMENTADO y FUNCIONANDO (mayo 2026)
 - [x] BingX data source fix — API keys pasadas correctamente, logging de fallback — IMPLEMENTADO (mayo 2026)
+- [x] AERO BOT PRO v3.0 — `calcular_score()` anticipatorio + `_analizar_mtf()` v3 (4H predice, 2H confirma, 1W/1D penalizan) — IMPLEMENTADO (mayo 2026)
 - [ ] Historial de trades persistente — PRÓXIMO (estructura en `trades_history.json` existe)
 - [ ] P&L en tiempo real de la posición abierta
 - [ ] Migrar VP a TradingView Lightweight Charts (mejor interacción Y-axis)
