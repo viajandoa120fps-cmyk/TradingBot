@@ -470,5 +470,7 @@ else:
 - [x] LED 3 estados — DESCONECTADO (rojo) → CONECTANDO (amarillo parpadeo) → CONECTADO (verde fijo) — IMPLEMENTADO (mayo 2026)
 - [x] Fix modal auto-open — `btn-historial` movido a `app.layout` estático como botón flotante `position:fixed` bottom-right — RESUELTO (mayo 2026)
 - [x] P&L en tiempo real — cálculo en bot loop + sección "Posicion Abierta" en panel derecho (`pnl-posicion`) — IMPLEMENTADO (mayo 2026)
+- [x] Fix LED CONECTADO falso — `cb_bot_status` usa `store-bot` como fuente de verdad + limpiar `scores/pnl/mtf` al detener — RESUELTO (mayo 2026)
+- [x] Rebalanceo de layout — Idioma a barra de relojes, Balance/P&L/Telegram/Gestión de Racha al panel izquierdo, INICIAR BOT debajo del checklist — IMPLEMENTADO (mayo 2026)
 - [ ] Refactor modular — separar en `ui.py`, `indicators.py`, `exchange/` (main.py supera 2900 líneas)
 - [ ] Migrar VP a TradingView Lightweight Charts (mejor interacción Y-axis)
