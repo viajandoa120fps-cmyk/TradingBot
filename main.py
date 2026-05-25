@@ -60,13 +60,13 @@ def _load_bot_state():
         try:
             ciclo = datetime.fromisoformat(state.get("ciclo_inicio", datetime.now().isoformat()))
             if (datetime.now() - ciclo).days >= _MAX_DIAS_CICLO:
-                print("[🔄 CICLO RESET] 30 días transcurridos. Nuevo ciclo AERO LADDER.")
+                print("[CICLO RESET] 30 dias transcurridos. Nuevo ciclo AERO LADDER.")
                 return default
         except Exception:
             pass
         # Reset si racha llegó a 0 con 2 pérdidas seguidas
         if state.get("racha_ganadora", 0) == 0 and state.get("perdidas_consecutivas_nivel_actual", 0) >= _MAX_PERDIDAS_RESET:
-            print("[🔄 CICLO RESET] Racha perdida. Nuevo ciclo AERO LADDER.")
+            print("[CICLO RESET] Racha perdida. Nuevo ciclo AERO LADDER.")
             return default
         return state
     except Exception:
@@ -118,7 +118,7 @@ def _actualizar_racha(state, pnl_pct, apalancamiento_usado, capital_total):
         if nuevo_apal > anterior_apal:
             profit_congelar = (abs(pnl_pct) / 100) * capital_total * 0.5
             state["profit_lock_acumulado"] = state.get("profit_lock_acumulado", 0.0) + profit_congelar
-            print(f"[🔒 Profit Lock] +${profit_congelar:.2f} congelado al subir a {nuevo_apal}X")
+            print(f"[Profit Lock] +${profit_congelar:.2f} congelado al subir a {nuevo_apal}X")
 
         state["apalancamiento_actual"] = nuevo_apal
         print(f"[📈 AERO LADDER] Ganador — Racha: {state['racha_ganadora']} | Apalancamiento: {nuevo_apal}X")
@@ -143,12 +143,12 @@ def _actualizar_racha(state, pnl_pct, apalancamiento_usado, capital_total):
             state["apalancamiento_actual"] = 2
             state["perdidas_consecutivas_nivel_actual"] = 0
             state["profit_lock_acumulado"] = 0.0
-            print("[🔄 RESET AERO LADDER] 2 pérdidas seguidas en mismo nivel. Vuelta a 2X.")
+            print("[RESET AERO LADDER] 2 perdidas seguidas en mismo nivel. Vuelta a 2X.")
 
         # Cooldown 24h si pérdida en 5X > 2% del capital total
         if apalancamiento_usado >= 5 and abs(pnl_pct) >= 2.0:
             state["cooldown_hasta"] = (datetime.now() + timedelta(hours=_MAX_COOLDOWN_HORAS)).isoformat()
-            print(f"[❄️ COOLDOWN] 24h en 2X por pérdida grande ({abs(pnl_pct):.2f}%) en 5X.")
+            print(f"[COOLDOWN] 24h en 2X por perdida grande ({abs(pnl_pct):.2f}%) en 5X.")
 
     _save_bot_state(state)
     return state
@@ -921,7 +921,7 @@ def _bot_loop(activos_lista, tf, capital_pct):
     # ── CARGAR ESTADO AERO LADDER ─────────────────────────────────────────────
     bot_state = _load_bot_state()
     apalancamiento_actual = _calcular_apalancamiento(bot_state)
-    print(f"[🪜 AERO LADDER] Inicio — Racha: {bot_state['racha_ganadora']} | Apalancamiento: {apalancamiento_actual}X")
+    print(f"[AERO LADDER] Inicio | Racha: {bot_state['racha_ganadora']} | Apalancamiento: {apalancamiento_actual}X")
 
     # Tracking por activo
     posicion = {a: None for a in activos_lista}
@@ -1208,7 +1208,7 @@ def _bot_loop(activos_lista, tf, capital_pct):
                 exposicion_max = bal_v * (_MAX_EXPOSICION_PCT / 100) if bal_v else 500
                 notional_nuevo = capital * apalancamiento_actual
                 if exposicion_actual + notional_nuevo > exposicion_max:
-                    print(f"[🛡️ TOPE EXPOSICIÓN] {activo}: Exposición actual ${exposicion_actual:.0f} + "
+                    print(f"[TOPE EXPOSICION] {activo}: Exposicion actual ${exposicion_actual:.0f} + "
                           f"nuevo ${notional_nuevo:.0f} supera máximo ${exposicion_max:.0f}. Trade bloqueado.")
                     continue
 
