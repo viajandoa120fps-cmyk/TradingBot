@@ -401,6 +401,24 @@ Si no matas correctamente, se acumulan servidores zombie que bloquean el puerto 
 El archivo termina con `}`. Nada va después de esa llave.
 Si se necesita guardar una API key externa (Kimi, OpenAI, etc.), crear un archivo separado como `keys_externas.json`.
 
+### 17. Emojis en `print()` — PROHIBIDO en Windows (cp1252)
+**Síntoma:** El bot loop arranca y muere silenciosamente en el primer `print()` que contiene un emoji.
+El thread lanza `UnicodeEncodeError: 'charmap' codec can't encode character` y desaparece sin dejar rastro visible en el dashboard — el panel simplemente dice "Bot detenido" para siempre.
+
+**Causa:** Windows usa cp1252 por defecto en la consola. La mayoría de emojis (🪜📈📉❄️🛡️ etc.) no existen en ese encoding.
+
+**Solución ya aplicada** en la línea 1 del archivo (antes de cualquier import):
+```python
+import sys, io
+if hasattr(sys.stdout, 'buffer'):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'buffer'):
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+```
+
+**Regla permanente:** Estas líneas deben ser siempre las primeras del archivo. No moverlas, no eliminarlas.
+Si en el futuro un AI agrega un `print()` con emoji y el bot loop deja de arrancar — esta es la causa. La solución ya está en el archivo, solo hay que verificar que esas líneas siguen al inicio.
+
 ---
 
 ## Pendiente (próximas sesiones)
