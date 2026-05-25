@@ -203,7 +203,7 @@ except Exception:
 TRANSLATIONS = {
     "es": {
         "title": "AERO BOT PRO", "subtitle": "Trading Bot Profesional",
-        "connected": "CONECTADO", "disconnected": "DESCONECTADO",
+        "connected": "CONECTADO", "disconnected": "DESCONECTADO", "connecting": "CONECTANDO...",
         "language": "Idioma", "timeframe": "Temporalidad",
         "assets": "Cripto BingX (max. 6)", "capital": "Capital por Op.",
         "score": "PUNTUACIÓN GLOBAL",
@@ -214,7 +214,7 @@ TRANSLATIONS = {
     },
     "en": {
         "title": "AERO BOT PRO", "subtitle": "Professional Trading Bot",
-        "connected": "CONNECTED", "disconnected": "DISCONNECTED",
+        "connected": "CONNECTED", "disconnected": "DISCONNECTED", "connecting": "CONNECTING...",
         "language": "Language", "timeframe": "Timeframe",
         "assets": "Crypto BingX (max. 6)", "capital": "Capital per Op.",
         "score": "GLOBAL SCORE",
@@ -225,7 +225,7 @@ TRANSLATIONS = {
     },
     "it": {
         "title": "AERO BOT PRO", "subtitle": "Bot di Trading Professionale",
-        "connected": "CONNESSO", "disconnected": "DISCONNESSO",
+        "connected": "CONNESSO", "disconnected": "DISCONNESSO", "connecting": "CONNESSIONE...",
         "language": "Lingua", "timeframe": "Temporalità",
         "assets": "Cripto BingX (max. 6)", "capital": "Capitale per Op.",
         "score": "PUNTEGGIO GLOBALE",
@@ -236,7 +236,7 @@ TRANSLATIONS = {
     },
     "fr": {
         "title": "AERO BOT PRO", "subtitle": "Bot de Trading Professionnel",
-        "connected": "CONNECTÉ", "disconnected": "DÉCONNECTÉ",
+        "connected": "CONNECTÉ", "disconnected": "DÉCONNECTÉ", "connecting": "CONNEXION...",
         "language": "Langue", "timeframe": "Temporalité",
         "assets": "Crypto BingX (max. 6)", "capital": "Capital par Op.",
         "score": "SCORE GLOBAL",
@@ -247,7 +247,7 @@ TRANSLATIONS = {
     },
     "de": {
         "title": "AERO BOT PRO", "subtitle": "Professioneller Trading Bot",
-        "connected": "VERBUNDEN", "disconnected": "GETRENNT",
+        "connected": "VERBUNDEN", "disconnected": "GETRENNT", "connecting": "VERBINDE...",
         "language": "Sprache", "timeframe": "Zeitrahmen",
         "assets": "Krypto BingX (max. 6)", "capital": "Kapital pro Op.",
         "score": "GESAMTPUNKTZAHL",
@@ -258,7 +258,7 @@ TRANSLATIONS = {
     },
     "zh": {
         "title": "AERO BOT PRO", "subtitle": "专业交易机器人",
-        "connected": "已连接", "disconnected": "未连接",
+        "connected": "已连接", "disconnected": "未连接", "connecting": "连接中...",
         "language": "语言", "timeframe": "时间框架",
         "assets": "加密货币 BingX（最多6个）", "capital": "每次资金",
         "score": "综合评分",
@@ -269,7 +269,7 @@ TRANSLATIONS = {
     },
     "ko": {
         "title": "AERO BOT PRO", "subtitle": "전문 트레이딩 봇",
-        "connected": "연결됨", "disconnected": "연결 안됨",
+        "connected": "연결됨", "disconnected": "연결 안됨", "connecting": "연결 중...",
         "language": "언어", "timeframe": "시간대",
         "assets": "암호화폐 BingX (최대 6개)", "capital": "거래당 자본",
         "score": "종합 점수",
@@ -280,7 +280,7 @@ TRANSLATIONS = {
     },
     "ja": {
         "title": "AERO BOT PRO", "subtitle": "プロトレーディングボット",
-        "connected": "接続済み", "disconnected": "未接続",
+        "connected": "接続済み", "disconnected": "未接続", "connecting": "接続中...",
         "language": "言語", "timeframe": "時間軸",
         "assets": "暗号資産 BingX（最大6個）", "capital": "取引資金",
         "score": "総合スコア",
@@ -436,7 +436,7 @@ TF_MAP = {
 _bot_thread = None
 _bot_stop = threading.Event()
 _bot_lock = threading.Lock()
-_bot_status = {"balance": None, "posicion": {}, "log": [], "mtf": {}, "scores": {}, "activos": []}
+_bot_status = {"balance": None, "posicion": {}, "log": [], "mtf": {}, "scores": {}, "activos": [], "pnl": {}}
 
 # ─── DATOS E INDICADORES ──────────────────────────────────────────────────────
 
@@ -1033,6 +1033,27 @@ def _bot_loop(activos_lista, tf, capital_pct):
                     elif pos_actual == "short" and precio < (precio_extremo[activo] or precio):
                         precio_extremo[activo] = precio
 
+                # ── P&L EN TIEMPO REAL ────────────────────────────────────────
+                if pos_actual and precio_entrada[activo]:
+                    ep_live = precio_entrada[activo]
+                    if pos_actual == "long":
+                        pnl_pct_live = (precio - ep_live) / ep_live * 100 * apalancamiento_actual
+                    else:
+                        pnl_pct_live = (ep_live - precio) / ep_live * 100 * apalancamiento_actual
+                    cap_usado = capital_usado.get(activo) or 0.0
+                    pnl_usd_live = cap_usado * pnl_pct_live / 100
+                    with _bot_lock:
+                        _bot_status["pnl"][activo] = {
+                            "pct":     round(pnl_pct_live, 2),
+                            "usd":     round(pnl_usd_live, 2),
+                            "side":    pos_actual,
+                            "entrada": ep_live,
+                            "precio":  precio,
+                        }
+                else:
+                    with _bot_lock:
+                        _bot_status["pnl"].pop(activo, None)
+
                 # ── STOP LOSS FIJO ────────────────────────────────────────────
                 if pos_actual and precio_entrada[activo] and stop_loss_pct > 0:
                     ep = precio_entrada[activo]
@@ -1586,15 +1607,7 @@ def _pagina_principal():
                 html.Div(className="separador-dorado"),
                 html.Button(id="btn-bot", children="INICIAR BOT",
                             className="btn-principal", n_clicks=0),
-                html.Button(id="btn-historial", children="📋 Historial de Trades",
-                            n_clicks=0, style={
-                                "width": "100%", "marginTop": "6px",
-                                "padding": "9px 0", "fontSize": "11px",
-                                "fontWeight": "700", "letterSpacing": "0.1em",
-                                "background": "#0d0d1a", "color": "#f0c040",
-                                "border": "1px solid #f0c040", "borderRadius": "4px",
-                                "cursor": "pointer",
-                            }),
+                # btn-historial movido a app.layout (estático) — fix modal auto-open
                 html.Div(className="seccion-control", style={"marginTop": "8px"}, children=[
                     html.Div(className="seccion-titulo", children="Telegram"),
                     html.Div(className="stat-fila", children=[
@@ -1610,6 +1623,14 @@ def _pagina_principal():
                         html.Span("USDT", className="stat-nombre"),
                         html.Span("–", id="bot-balance-val", className="stat-valor"),
                     ]),
+                ]),
+                html.Div(className="separador-dorado"),
+                html.Div(className="seccion-control", children=[
+                    html.Div(className="seccion-titulo", children="Posicion Abierta"),
+                    html.Div(id="pnl-posicion",
+                             style={"marginTop": "4px", "lineHeight": "1.8"},
+                             children=html.Div("Sin posicion abierta",
+                                               style={"color": "#3a3a50", "fontSize": "11px"})),
                 ]),
                 html.Div(id="bot-log", style={
                     "marginTop": "6px", "fontSize": "10px",
@@ -1690,6 +1711,18 @@ app.layout = html.Div([
         html.Span("- Jesse Livermore", className="autor"),
     ]),
     html.Div(id="page-content"),
+
+    # ── BTN HISTORIAL — estático para que prevent_initial_call funcione en Edge ──
+    html.Button(id="btn-historial", children="📋 Historial de Trades",
+                n_clicks=0, style={
+                    "position": "fixed", "bottom": "20px", "right": "20px",
+                    "zIndex": "900",
+                    "padding": "9px 16px", "fontSize": "11px",
+                    "fontWeight": "700", "letterSpacing": "0.1em",
+                    "background": "#0d0d1a", "color": "#f0c040",
+                    "border": "1px solid #f0c040", "borderRadius": "4px",
+                    "cursor": "pointer", "boxShadow": "0 0 12px rgba(240,192,64,0.15)",
+                }),
 
     # ── MODAL HISTORIAL DE TRADES (siempre en DOM, visible/oculto por callback) ──
     html.Div(id="modal-historial", style={"display": "none"}, children=[
@@ -1821,7 +1854,7 @@ def cb_bot(n, activo, idioma, activos_sel, tf, capital_pct):
             daemon=True,
         )
         _bot_thread.start()
-        return t["stop"], "btn-principal stop", "led-dot", t["connected"], True
+        return t["stop"], "btn-principal stop", "led-dot conectando", t["connecting"], True
     _bot_stop.set()
     return t["start"], "btn-principal", "led-dot desconectado", t["disconnected"], False
 
@@ -2082,11 +2115,15 @@ def _senal_card(ticker, score):
      Output("aero-ladder-val", "children"),
      Output("aero-racha-val", "children"),
      Output("aero-lock-val", "children"),
-     Output("panel-senales-mini", "children")],
+     Output("panel-senales-mini", "children"),
+     Output("led-dot", "className",  allow_duplicate=True),
+     Output("led-txt", "children",   allow_duplicate=True),
+     Output("pnl-posicion", "children")],
     Input("tick-bot-status", "n_intervals"),
+    State("store-idioma", "data"),
     prevent_initial_call=True,
 )
-def cb_bot_status(_):
+def cb_bot_status(_, idioma):
     with _bot_lock:
         bal = _bot_status["balance"]
         log = list(_bot_status["log"])
@@ -2094,6 +2131,7 @@ def cb_bot_status(_):
         scores = dict(_bot_status.get("scores", {}))
         activos_sel = list(_bot_status.get("activos", []))
         apal = _bot_status.get("apalancamiento", 2)
+        pnl_data = dict(_bot_status.get("pnl", {}))
 
     bal_txt = f"${bal:,.2f}" if isinstance(bal, float) else "–"
     log_items = [
@@ -2184,10 +2222,48 @@ def cb_bot_status(_):
         aero_racha = "–"
         aero_lock = "–"
 
+    # ── LED 3 estados ─────────────────────────────────────────────────────────
+    t_led = TRANSLATIONS.get(idioma or "es", TRANSLATIONS["es"])
+    bot_vivo = bool(_bot_thread and _bot_thread.is_alive())
+    if not bot_vivo:
+        led_class = "led-dot desconectado"
+        led_txt_v = t_led["disconnected"]
+    elif not scores:
+        led_class = "led-dot conectando"
+        led_txt_v = t_led["connecting"]
+    else:
+        led_class = "led-dot"
+        led_txt_v = t_led["connected"]
+
+    # ── P&L en tiempo real ────────────────────────────────────────────────────
+    if pnl_data:
+        pnl_items = []
+        for act, p in pnl_data.items():
+            pct     = p.get("pct",    0.0)
+            usd     = p.get("usd",    0.0)
+            side    = p.get("side",   "")
+            entrada = p.get("entrada", 0.0)
+            precio_v = p.get("precio", 0.0)
+            color  = "#00ff88" if pct >= 0 else "#ff3355"
+            signo  = "+" if pct >= 0 else ""
+            pnl_items.append(html.Div([
+                html.Span(f"{act} {side.upper()} ",
+                          style={"color": "#f0c040", "fontWeight": "700", "fontSize": "11px"}),
+                html.Span(f"{signo}{pct:.2f}%",
+                          style={"color": color, "fontWeight": "700", "fontSize": "12px"}),
+                html.Br(),
+                html.Span(f"${entrada:,.2f} → ${precio_v:,.2f}",
+                          style={"color": "#6b5520", "fontSize": "10px", "fontFamily": "monospace"}),
+            ], style={"marginBottom": "4px"}))
+        pnl_display = html.Div(pnl_items)
+    else:
+        pnl_display = html.Div("Sin posicion abierta", style={"color": "#3a3a50", "fontSize": "11px"})
+
     return (bal_txt, log_items, tg_txt, tg_style,
             mtf_1w_txt, mtf_1d_txt, mtf_4h_txt, mtf_2h_txt,
             mtf_dir, mtf_adv_txt, mtf_adv_style,
-            aero_apal, aero_racha, aero_lock, senales)
+            aero_apal, aero_racha, aero_lock, senales,
+            led_class, led_txt_v, pnl_display)
     
 # ─── MODAL HISTORIAL — CALLBACKS ─────────────────────────────────────────────
 

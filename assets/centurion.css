@@ -107,7 +107,13 @@ body::before {
     border-radius: 50%;
     background: var(--verde-led);
     box-shadow: 0 0 6px var(--verde-led), 0 0 12px var(--verde-led);
-    animation: parpadeo 1.4s ease-in-out infinite;
+    /* conectado = steady, sin animacion */
+}
+
+.led-dot.conectando {
+    background: var(--dorado-vivo);
+    box-shadow: 0 0 6px var(--dorado-vivo), 0 0 12px var(--dorado-vivo);
+    animation: parpadeo 1.0s ease-in-out infinite;
 }
 
 .led-dot.desconectado {
@@ -128,6 +134,10 @@ body::before {
     color: var(--verde-led);
     letter-spacing: 0.2em;
 }
+
+/* Colores del texto LED segun estado */
+.led-dot.desconectado ~ .led-texto { color: var(--rojo-led); }
+.led-dot.conectando   ~ .led-texto { color: var(--dorado-vivo); }
 
 #relojes-barra {
     display: flex;
