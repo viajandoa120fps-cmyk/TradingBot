@@ -180,33 +180,49 @@ El AI que termina su turno llena esta sección antes de cerrar:
 
 ### 🔄 ÚLTIMO HANDOFF
 
-**Fecha:** 25 mayo 2026
+**Fecha:** 25 mayo 2026 (turno 2 — mismo día)
 **AI que trabajó:** Claude (Anthropic)
-**Commit GitHub:** `dc886f1`
+**Commit GitHub:** `f04e6c2`
 
 **Qué se resolvió en este turno:**
-- Fix crítico: `ccxt.bingx()` ahora pasa API keys correctamente — antes todos los datos venían de Binance spot silenciosamente
-- Logging explícito cuando cae al fallback Binance
-- Implementación completa de `panel-senales-mini` con tarjetas por activo y barras de progreso
-- Renombrado de IDs con `ñ` a ASCII puro para compatibilidad JS/Dash
-- Arquitectura de scores: se guardan en `_bot_status["scores"]` y `_bot_status["activos"]` en vez de depender del State del checklist
-- `iniciar_bot.bat` actualizado con flag `-B` para evitar bytecode cache
-- Documentación en `CLAUDE.md` con reglas 12-14 y protocolo de debugging
-- Creación de `TEAM_PROTOCOL.md` (este archivo)
+
+1. **Bug raíz del `panel-senales-mini` — RESUELTO ✅**
+   - Causa real: la variable `senales` se computaba en `cb_bot_status` pero nunca se incluía en el `return`. Era una línea faltante, no un problema de arquitectura.
+   - Fix: `panel-senales-mini` reintegrado como output #12 de `cb_bot_status` (que ya actualizaba correctamente 11 componentes). Eliminado el `cb_panel_senales` separado que tenía `prevent_initial_call=True` y quedaba suprimido en Edge.
+   - Resultado: tarjetas de señal visibles con barra de progreso y label LONG/SHORT/NEUTRAL ✅
+
+2. **`config.json` malformado — RESUELTO ✅**
+   - Causa: `kimi_api_key` fue appended fuera del objeto JSON (después del `}`), rompiendo el parse completo.
+   - Consecuencias: `_pagina_principal()` fallaba silenciosamente → "Sin Stop Fijo OK", label "ACTIVOS (MÁX. 6)", capital "20%", todo corrompido.
+   - Fix: archivo corregido a JSON válido, línea espuria removida.
+
+3. **13 procesos zombie `python3.11` — RESUELTO ✅**
+   - Causa: Python en esta máquina corre como `python3.11` (Microsoft Store), no como `python`. Todos los intentos de `Get-Process python | Stop-Process` no mataban nada. Los 13 servidores acumulados bloqueaban el puerto 8051, el primero (con código viejo) siempre ganaba.
+   - Fix: usar `Get-Process python3.11 | Stop-Process` en esta máquina.
+   - **REGLA PERMANENTE para esta máquina:** el proceso Python se llama `python3.11`, no `python`.
 
 **Qué avanzó en el roadmap:**
-- Item #1 (panel señales): implementado en código, bug de rendering pendiente
+- Item #1 (panel señales): **✅ COMPLETO** — tarjetas visibles, barra de progreso, LONG/SHORT/NEUTRAL por activo
 
 **Estado al cerrar:**
-- Servidor corre código nuevo (confirmado por `[CHECK]` en terminal)
-- Bug de rendering sin resolver — panel existe en código pero no visible en browser
-- GitHub sincronizado, branch main al día
+- Panel señales funcionando: TRX 🟢 LONG 86%, ADA 🔴 SHORT 98% — confirmado por Eduardo y Kimi
+- Capital "5%" correcto, Stop Loss "−5.0%" correcto, label "CRIPTO BINGX" correcto
+- GitHub sincronizado, commit `f04e6c2`
+- Servidor limpio: UN solo proceso `python3.11` (PID ~10868)
 
 **Para el próximo AI — tarea inmediata:**
-Resolver el bug de rendering del `panel-senales-mini`. El enfoque recomendado por Claude: mover el div al layout estático (`app.layout`) en vez de dejarlo dentro de `_pagina_principal()`. Así Dash lo registra al arrancar y los callbacks siempre lo encuentran, sin depender del routing dinámico.
+Avanzar en el item #2 del roadmap: **historial de trades persistente**.
+- El archivo `trades_history.json` ya existe y tiene la estructura básica (ver `_registrar_trade()` en main.py)
+- Falta: panel en el dashboard que muestre los últimos trades con P&L, tipo (LONG/SHORT), activo, precio entrada/salida
+- Proponer: ¿tab separado? ¿sección en el panel derecho? ¿modal?
 
-**Para el próximo AI — visión a largo plazo:**
-Además de resolver el bug, proponer cómo avanzar en el item #2 del roadmap (historial de trades persistente). Pensar en la estructura del archivo `trades_history.json` y cómo integrarlo con el dashboard.
+**Para el próximo AI — comando correcto para matar el servidor en esta máquina:**
+```powershell
+Get-Process python3.11 -ErrorAction SilentlyContinue | Stop-Process -Force -Confirm:$false
+```
+
+**Punto de vista de Claude para Kimi:**
+El sistema está estable ahora. Los bugs que quedaban eran todos consecuencia de dos problemas raíz: config.json roto (que corrompía silenciosamente toda la UI) y el error de nombre de proceso. Con eso resuelto, la arquitectura de callbacks de Dash está funcionando correctamente para el layout dinámico. No hay que mover nada al layout estático — era la hipótesis equivocada. El problema era operacional, no arquitectónico.
 
 **Punto de vista de Claude para Kimi:**
 El problema recurrente de rendering en Edge (3 elementos distintos con el mismo síntoma) apunta a que Dash tiene un comportamiento inconsistente con layouts dinámicos en Edge. No es un bug de lógica Python — es un problema de cómo Dash/React sincroniza el DOM en este browser. La solución arquitectónica limpia es sacar los elementos críticos del layout dinámico y ponerlos en el estático.

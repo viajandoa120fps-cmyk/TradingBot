@@ -349,12 +349,38 @@ Sin ambas condiciones el panel muestra texto invisible o vacío.
 
 ---
 
+## Reglas de operación — esta máquina específica
+
+### 15. Python en esta máquina se llama `python3.11`
+El proceso Python en Windows con Microsoft Store Python se llama `python3.11`, NO `python`.
+Usar SIEMPRE los comandos correctos:
+
+```powershell
+# Matar servidor (CORRECTO)
+Get-Process python3.11 -ErrorAction SilentlyContinue | Stop-Process -Force -Confirm:$false
+
+# Iniciar servidor (CORRECTO)
+Start-Process cmd -ArgumentList "/k cd /d C:\Users\Dell\Desktop\TradingBot && python3.11 -B main.py"
+
+# Verificar que está corriendo (CORRECTO)
+Get-Process python3.11 -ErrorAction SilentlyContinue
+```
+
+Si usas `Get-Process python` no encontrará nada — proceso equivocado.
+Si no matas correctamente, se acumulan servidores zombie que bloquean el puerto 8051.
+
+### 16. config.json — nunca agregar líneas fuera del objeto JSON
+El archivo termina con `}`. Nada va después de esa llave.
+Si se necesita guardar una API key externa (Kimi, OpenAI, etc.), crear un archivo separado como `keys_externas.json`.
+
+---
+
 ## Pendiente (próximas sesiones)
 
-- [ ] Bug visual: slider de capital no refleja el cambio a 5% tras reiniciar (investigar)
+- [x] Bug visual: slider de capital — RESUELTO (era config.json malformado, mayo 2026)
 - [x] MTF guardarrail — IMPLEMENTADO (mayo 2026)
-- [x] Panel señales mini por activo (`panel-señales-mini`) — IMPLEMENTADO (mayo 2026)
+- [x] Panel señales mini por activo (`panel-senales-mini`) — IMPLEMENTADO y FUNCIONANDO (mayo 2026)
 - [x] BingX data source fix — API keys pasadas correctamente, logging de fallback — IMPLEMENTADO (mayo 2026)
-- [ ] Historial de trades persistente
+- [ ] Historial de trades persistente — PRÓXIMO (estructura en `trades_history.json` existe)
 - [ ] P&L en tiempo real de la posición abierta
 - [ ] Migrar VP a TradingView Lightweight Charts (mejor interacción Y-axis)
