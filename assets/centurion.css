@@ -141,11 +141,33 @@ body::before {
 
 #relojes-barra {
     display: flex;
-    justify-content: center;
-    gap: 32px;
+    align-items: center;
+    justify-content: space-between;
     padding: 8px 28px;
     background: var(--negro-panel);
     border-bottom: 1px solid var(--negro-borde);
+}
+
+.relojes-grupo {
+    display: flex;
+    align-items: center;
+    gap: 32px;
+}
+
+.idioma-barra {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.idioma-barra-label {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--dorado-bajo);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    white-space: nowrap;
 }
 
 .reloj-ciudad { text-align: center; min-width: 80px; }

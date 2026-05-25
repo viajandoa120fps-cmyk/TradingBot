@@ -1380,15 +1380,6 @@ def _pagina_principal():
             # LEFT
             html.Div(className="panel-lateral", children=[
                 html.Div(className="seccion-control", children=[
-                    html.Div(id="lbl-idioma", className="seccion-titulo", children="Idioma"),
-                    dcc.RadioItems(id="radio-idioma",
-                                   options=[{"label": x, "value": x.lower()}
-                                            for x in ["ES","EN","IT","FR","DE","ZH","KO","JA"]],
-                                   value="es", className="radio-idiomas",
-                                   inputStyle={"display": "none"}),
-                ]),
-                html.Div(className="separador-dorado"),
-                html.Div(className="seccion-control", children=[
                     html.Div(id="lbl-tf", className="seccion-titulo", children="Temporalidad"),
                     dcc.RadioItems(id="radio-tf",
                                    options=[
@@ -1412,6 +1403,47 @@ def _pagina_principal():
                     dcc.Slider(id="slider-capital", min=1, max=20, step=1, value=5,
                                marks={1:"1%", 5:"5%", 10:"10%", 15:"15%", 20:"20%"},
                                tooltip={"placement": "bottom", "always_visible": False}),
+                ]),
+                html.Div(className="separador-dorado"),
+                html.Div(className="seccion-control", children=[
+                    html.Div(className="seccion-titulo", children="Balance BingX"),
+                    html.Div(className="stat-fila", children=[
+                        html.Span("USDT", className="stat-nombre"),
+                        html.Span("–", id="bot-balance-val", className="stat-valor"),
+                    ]),
+                ]),
+                html.Div(className="separador-dorado"),
+                html.Div(className="seccion-control", children=[
+                    html.Div(className="seccion-titulo", children="Posicion Abierta"),
+                    html.Div(id="pnl-posicion",
+                             style={"marginTop": "4px", "lineHeight": "1.8"},
+                             children=html.Div("Sin posicion abierta",
+                                               style={"color": "#3a3a50", "fontSize": "11px"})),
+                ]),
+                html.Div(className="separador-dorado"),
+                html.Div(className="seccion-control", children=[
+                    html.Div(className="seccion-titulo", children="Telegram"),
+                    html.Div(className="stat-fila", children=[
+                        html.Span("Estado", className="stat-nombre"),
+                        html.Span("No configurado", id="telegram-estado",
+                                  style={"color": "#a0a8c0", "fontSize": "12px"}),
+                    ]),
+                ]),
+                html.Div(className="separador-dorado"),
+                html.Div(className="seccion-control", children=[
+                    html.Div(className="seccion-titulo", children="Gestión de Racha"),
+                    html.Div([
+                        html.Div(className="stat-fila", children=[
+                            html.Span("Pérdidas (2+)", className="stat-nombre"),
+                            html.Span("Reducir", className="stat-valor",
+                                      style={"color": "#ff3355"}),
+                        ]),
+                        html.Div(className="stat-fila", children=[
+                            html.Span("Ganancias (3+)", className="stat-nombre"),
+                            html.Span("Aumentar", className="stat-valor",
+                                      style={"color": "#00ff88"}),
+                        ]),
+                    ]),
                 ]),
             ]),
 
@@ -1492,6 +1524,9 @@ def _pagina_principal():
                     ]),
                     html.Div(id="panel-senales-mini", style={"marginTop": "8px"}),
                 ]),
+                html.Button(id="btn-bot", children="INICIAR BOT",
+                            className="btn-principal", n_clicks=0,
+                            style={"marginTop": "8px"}),
                 html.Div(className="separador-dorado"),
                 html.Div(className="seccion-control", children=[
                     html.Div(className="seccion-titulo", children="Trailing Stop"),
@@ -1589,49 +1624,7 @@ def _pagina_principal():
                     }),
                 ]),
                 html.Div(className="separador-dorado"),
-                html.Div(className="seccion-control", children=[
-                    html.Div(className="seccion-titulo", children="Gestión de Racha"),
-                    html.Div([
-                        html.Div(className="stat-fila", children=[
-                            html.Span("Pérdidas (2+)", className="stat-nombre"),
-                            html.Span("Reducir", className="stat-valor",
-                                      style={"color": "#ff3355"}),
-                        ]),
-                        html.Div(className="stat-fila", children=[
-                            html.Span("Ganancias (3+)", className="stat-nombre"),
-                            html.Span("Aumentar", className="stat-valor",
-                                      style={"color": "#00ff88"}),
-                        ]),
-                    ]),
-                ]),
-                html.Div(className="separador-dorado"),
-                html.Button(id="btn-bot", children="INICIAR BOT",
-                            className="btn-principal", n_clicks=0),
-                # btn-historial movido a app.layout (estático) — fix modal auto-open
-                html.Div(className="seccion-control", style={"marginTop": "8px"}, children=[
-                    html.Div(className="seccion-titulo", children="Telegram"),
-                    html.Div(className="stat-fila", children=[
-                        html.Span("Estado", className="stat-nombre"),
-                        html.Span("No configurado", id="telegram-estado",
-                                  style={"color": "#a0a8c0", "fontSize": "12px"}),
-                    ]),
-                ]),
-                html.Div(className="separador-dorado"),
-                html.Div(className="seccion-control", children=[
-                    html.Div(className="seccion-titulo", children="Balance BingX"),
-                    html.Div(className="stat-fila", children=[
-                        html.Span("USDT", className="stat-nombre"),
-                        html.Span("–", id="bot-balance-val", className="stat-valor"),
-                    ]),
-                ]),
-                html.Div(className="separador-dorado"),
-                html.Div(className="seccion-control", children=[
-                    html.Div(className="seccion-titulo", children="Posicion Abierta"),
-                    html.Div(id="pnl-posicion",
-                             style={"marginTop": "4px", "lineHeight": "1.8"},
-                             children=html.Div("Sin posicion abierta",
-                                               style={"color": "#3a3a50", "fontSize": "11px"})),
-                ]),
+                # btn-historial en app.layout (estático) — fix modal auto-open
                 html.Div(id="bot-log", style={
                     "marginTop": "6px", "fontSize": "10px",
                     "color": "#6b5520", "lineHeight": "1.7",
@@ -1703,8 +1696,18 @@ app.layout = html.Div([
         ]),
     ]),
     html.Div(id="relojes-barra", children=[
-        _reloj("NEW YORK", "NY"), _reloj("LONDON", "LON"),
-        _reloj("TOKYO", "TYO"), _reloj("DUBAI", "DXB"),
+        html.Div(className="relojes-grupo", children=[
+            _reloj("NEW YORK", "NY"), _reloj("LONDON", "LON"),
+            _reloj("TOKYO", "TYO"), _reloj("DUBAI", "DXB"),
+        ]),
+        html.Div(className="idioma-barra", children=[
+            html.Span("IDIOMA", className="idioma-barra-label"),
+            dcc.RadioItems(id="radio-idioma",
+                           options=[{"label": x, "value": x.lower()}
+                                    for x in ["ES","EN","IT","FR","DE","ZH","KO","JA"]],
+                           value="es", className="radio-idiomas",
+                           inputStyle={"display": "none"}),
+        ]),
     ]),
     html.Div(id="frase-barra", children=[
         "El mercado recompensa la paciencia, no la prisa.",
@@ -1856,6 +1859,10 @@ def cb_bot(n, activo, idioma, activos_sel, tf, capital_pct):
         _bot_thread.start()
         return t["stop"], "btn-principal stop", "led-dot conectando", t["connecting"], True
     _bot_stop.set()
+    with _bot_lock:
+        _bot_status["scores"] = {}
+        _bot_status["pnl"]    = {}
+        _bot_status["mtf"]    = {}
     return t["start"], "btn-principal", "led-dot desconectado", t["disconnected"], False
 
 @app.callback(Output("store-tf", "data"), Input("radio-tf", "value"))
@@ -2121,9 +2128,10 @@ def _senal_card(ticker, score):
      Output("pnl-posicion", "children")],
     Input("tick-bot-status", "n_intervals"),
     State("store-idioma", "data"),
+    State("store-bot", "data"),
     prevent_initial_call=True,
 )
-def cb_bot_status(_, idioma):
+def cb_bot_status(_, idioma, bot_activo):
     with _bot_lock:
         bal = _bot_status["balance"]
         log = list(_bot_status["log"])
@@ -2223,8 +2231,9 @@ def cb_bot_status(_, idioma):
         aero_lock = "–"
 
     # ── LED 3 estados ─────────────────────────────────────────────────────────
+    # store-bot es la fuente de verdad — se pone False al detener el bot
     t_led = TRANSLATIONS.get(idioma or "es", TRANSLATIONS["es"])
-    bot_vivo = bool(_bot_thread and _bot_thread.is_alive())
+    bot_vivo = bool(bot_activo and _bot_thread and _bot_thread.is_alive())
     if not bot_vivo:
         led_class = "led-dot desconectado"
         led_txt_v = t_led["disconnected"]
