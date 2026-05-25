@@ -26,9 +26,9 @@ def _exchange():
 
 
 def verificar_balance():
-    """Retorna el balance de USDT disponible como float, o None si falla."""
+    """Retorna el balance USDT disponible de la cuenta Perpetual Futures (swap)."""
     try:
-        b = _exchange().fetch_balance()
+        b = _exchange().fetch_balance({"type": "swap"})
         return float(b["USDT"]["free"])
     except Exception:
         return None
