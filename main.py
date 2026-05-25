@@ -1625,7 +1625,7 @@ def cb_bot(n, activo, idioma, activos_sel, tf, capital_pct):
     if nuevo:
         activos_lista = ["BTC"] + [a for a in (activos_sel or []) if a != "BTC"]
         with _bot_lock:
-            _bot_status["activos"] = [a for a in activos_lista if a != "BTC"]
+            _bot_status["activos"] = activos_sel or []  # refleja exactamente lo que el usuario chequeó
         _bot_stop.clear()
         _bot_thread = threading.Thread(
             target=_bot_loop,
