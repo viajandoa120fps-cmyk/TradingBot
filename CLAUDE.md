@@ -421,6 +421,44 @@ Si en el futuro un AI agrega un `print()` con emoji y el bot loop deja de arranc
 
 ---
 
+### 18. LED 3 estados — patrón de control dual con allow_duplicate
+El LED tiene 3 estados: `desconectado` (rojo), `conectando` (amarillo parpadeo), `conectado` (verde fijo).
+
+- `cb_bot` pone `"led-dot conectando"` al iniciar el thread — feedback inmediato al click.
+- `cb_bot_status` (tick cada 5s) es el **único que transiciona a `"led-dot"` (conectado)**. Usa `Output("led-dot", "className", allow_duplicate=True)` — Dash 4.x lo soporta.
+- La lógica en `cb_bot_status`:
+  - `_bot_thread` muerto → `"led-dot desconectado"`
+  - bot vivo pero `scores` vacío → `"led-dot conectando"`
+  - bot vivo y `scores` con datos → `"led-dot"` (verde fijo)
+- El color del **texto** LED cambia via CSS sibling selector (`~`), sin output extra:
+  ```css
+  .led-dot.desconectado ~ .led-texto { color: var(--rojo-led); }
+  .led-dot.conectando   ~ .led-texto { color: var(--dorado-vivo); }
+  /* base .led-texto ya tiene color: var(--verde-led) */
+  ```
+
+### 19. btn-historial — siempre en app.layout (estático), nunca en layout dinámico
+`btn-historial` debe vivir en `app.layout`, no en `_pagina_principal()`.
+Con Dash 4.x, cuando un componente entra al DOM via callback (layout dinámico), dispara los callbacks que lo tienen como `Input` aunque `prevent_initial_call=True` esté activado.
+Fix aplicado: `btn-historial` en `app.layout` con `position: fixed; bottom: 20px; right: 20px` (botón flotante).
+
+### 20. P&L en tiempo real — patrón de cálculo en bot loop
+El P&L se calcula DESPUÉS del bloque de `precio_extremo` y ANTES del Stop Loss, por activo:
+```python
+if pos_actual and precio_entrada[activo]:
+    ep_live = precio_entrada[activo]
+    pnl_pct_live = (precio - ep_live) / ep_live * 100 * apalancamiento_actual  # long
+    # (ep_live - precio) / ep_live * 100 * apalancamiento_actual  # short
+    with _bot_lock:
+        _bot_status["pnl"][activo] = {"pct": ..., "usd": ..., "side": ..., "entrada": ..., "precio": ...}
+else:
+    with _bot_lock:
+        _bot_status["pnl"].pop(activo, None)  # limpiar al cerrar posición
+```
+`_bot_status["pnl"]` es un dict `{activo: {...}}`. El elemento UI es `id="pnl-posicion"`, output #18 de `cb_bot_status`.
+
+---
+
 ## Pendiente (próximas sesiones)
 
 - [x] Bug visual: slider de capital — RESUELTO (era config.json malformado, mayo 2026)
@@ -429,6 +467,8 @@ Si en el futuro un AI agrega un `print()` con emoji y el bot loop deja de arranc
 - [x] BingX data source fix — API keys pasadas correctamente, logging de fallback — IMPLEMENTADO (mayo 2026)
 - [x] AERO BOT PRO v3.0 — `calcular_score()` anticipatorio + `_analizar_mtf()` v3 (4H predice, 2H confirma, 1W/1D penalizan) — IMPLEMENTADO (mayo 2026)
 - [x] Historial de trades — modal implementado con tabla completa y pills de resumen (mayo 2026)
-- [ ] **BUG PENDIENTE: modal se abre solo al recargar página** — mover `btn-historial` del layout dinámico al estático (`app.layout`) para que `prevent_initial_call=True` funcione correctamente en Edge
-- [ ] P&L en tiempo real de la posición abierta
+- [x] LED 3 estados — DESCONECTADO (rojo) → CONECTANDO (amarillo parpadeo) → CONECTADO (verde fijo) — IMPLEMENTADO (mayo 2026)
+- [x] Fix modal auto-open — `btn-historial` movido a `app.layout` estático como botón flotante `position:fixed` bottom-right — RESUELTO (mayo 2026)
+- [x] P&L en tiempo real — cálculo en bot loop + sección "Posicion Abierta" en panel derecho (`pnl-posicion`) — IMPLEMENTADO (mayo 2026)
+- [ ] Refactor modular — separar en `ui.py`, `indicators.py`, `exchange/` (main.py supera 2900 líneas)
 - [ ] Migrar VP a TradingView Lightweight Charts (mejor interacción Y-axis)
