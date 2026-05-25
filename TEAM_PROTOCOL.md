@@ -1,26 +1,59 @@
-# AERO BOT PRO — Protocolo de Equipo: Claude + Kimi + Humano
+# AERO BOT PRO — Protocolo de Equipo: Claude + Kimi + Eduardo
 
 ---
 
-## Quiénes somos y cómo trabajamos
+## La visión — por qué existimos
 
-Este proyecto es una colaboración activa entre tres participantes:
+Estamos construyendo un **trading bot profesional de alta calidad** que se va a distribuir como producto. No es un proyecto de garage. Es un sistema que traders reales van a usar con capital real.
 
-- **Eduardo (Humano)** — Dueño del producto. Toma decisiones finales. Define la visión y las prioridades. Es el árbitro cuando Claude y Kimi tienen opiniones distintas.
-- **Claude (Anthropic)** — Especialista en arquitectura, decisiones técnicas, análisis de trading, documentación y calidad de código.
-- **Kimi (Moonshot AI)** — Especialista en contexto largo, archivos grandes, generación rápida de código y debugging exhaustivo.
+La filosofía es simple: **las cosas que realmente valen la pena se construyen con trabajo, criterio y colaboración entre inteligencias distintas.** Eduardo aporta la visión de negocio y la experiencia de mercado. Claude aporta arquitectura y análisis crítico. Kimi aporta velocidad de procesamiento y contexto extenso. Los tres juntos construyen algo que ninguno construiría solo.
 
-Ningún AI está conectado directamente al otro. **El código, GitHub y este archivo son el canal de comunicación entre todos.**
+---
+
+## Quiénes somos
+
+| Participante | Rol | Fortaleza principal |
+|---|---|---|
+| **Eduardo** | Dueño del producto y árbitro final | Visión de negocio, experiencia de mercado, decisiones estratégicas |
+| **Claude** | Arquitecto y socio de trading | Diseño de sistemas, análisis crítico, calidad de código, decisiones técnicas |
+| **Kimi** | Ingeniero de ejecución | Contexto largo, archivos grandes, debugging exhaustivo, velocidad de implementación |
+
+**Regla fundamental:** Ningún AI le da la razón a Eduardo automáticamente. Si el análisis del usuario es incorrecto o riesgoso, se dice directamente y se explica por qué. Somos socios, no asistentes complacientes.
+
+---
+
+## Cómo colaboramos — el modelo de turnos
+
+Ningún AI está conectado directamente al otro. El código, GitHub y este archivo son el canal de comunicación entre todos. El flujo es:
+
+```
+Eduardo define qué se trabaja en este turno
+        ↓
+AI activo lee CLAUDE.md + TEAM_PROTOCOL.md (HANDOFF)
+        ↓
+AI activo trabaja: resuelve bugs + avanza en roadmap + propone mejoras
+        ↓
+Al terminar: actualiza HANDOFF + sube a GitHub
+        ↓
+Eduardo lleva el trabajo al otro AI
+        ↓
+El otro AI lee el HANDOFF + da su punto de vista + continúa
+```
+
+**Cada turno tiene dos responsabilidades:**
+1. **Resolver** — El bug o tarea del momento
+2. **Construir** — Avanzar en el roadmap a largo plazo y proponer mejoras al producto
 
 ---
 
 ## Reglas del equipo — no negociables
 
-1. **Leer antes de tocar** — Antes de escribir una sola línea, el AI que entra lee `CLAUDE.md` completo. Ahí está toda la arquitectura, bugs conocidos y reglas críticas.
-2. **GitHub es la única verdad** — Todo cambio se sube a GitHub al terminar el turno. Nunca se pasa trabajo por chat o texto plano.
-3. **No romper lo que funciona** — Si algo está marcado como ✅ en `CLAUDE.md`, no se toca sin razón explícita.
-4. **El humano decide** — Si Claude y Kimi proponen soluciones distintas, Eduardo elige. Ambos AIs exponen su razonamiento con datos, no con opiniones.
-5. **Cada turno termina con handoff completo** — El AI que termina deja el HANDOFF actualizado (ver sección abajo) antes de cerrar sesión.
+1. **Leer antes de tocar** — Siempre leer `CLAUDE.md` y el HANDOFF antes de escribir código
+2. **GitHub es la única verdad** — Todo cambio se sube a GitHub al terminar. Nunca pasar código por chat
+3. **No romper lo que funciona** — Si algo está marcado ✅ no se toca sin razón explícita
+4. **Dos perspectivas valen más que una** — Cuando Claude y Kimi tienen enfoques distintos, ambos los exponen con datos. Eduardo decide
+5. **Handoff completo siempre** — El AI que termina deja el HANDOFF actualizado antes de cerrar sesión
+6. **Roadmap siempre visible** — Cada turno avanza al menos un paso del roadmap, no solo apaga incendios
 
 ---
 
@@ -31,7 +64,7 @@ Ningún AI está conectado directamente al otro. **El código, GitHub y este arc
 | Carpeta local | `C:\Users\Dell\Desktop\TradingBot\` |
 | Repositorio GitHub | `https://github.com/viajandoa120fps-cmyk/TradingBot.git` |
 | Archivo principal | `main.py` (puerto 8051, Python Dash) |
-| Guía de arquitectura | `CLAUDE.md` — leer primero, siempre |
+| Guía de arquitectura y reglas | `CLAUDE.md` — leer primero, siempre |
 | Protocolo de equipo | `TEAM_PROTOCOL.md` (este archivo) |
 | Lanzador | `iniciar_bot.bat` → doble clic → `http://localhost:8051` |
 
@@ -39,75 +72,109 @@ Ningún AI está conectado directamente al otro. **El código, GitHub y este arc
 
 ## Stack técnico
 
-- **Python 3** + **Dash** (Plotly) — Dashboard web puerto 8051
-- **ccxt** — Conexión a BingX perpetual swaps
+- **Python 3** + **Dash (Plotly)** — Dashboard web puerto 8051
+- **ccxt** — Conexión a exchanges (BingX perpetual, Binance spot fallback)
 - **Pandas / NumPy / SciPy** — Indicadores técnicos
-- **Threading** — Bot loop en background
-- **Telegram Bot API** — Notificaciones de operaciones
+- **Threading** — Bot loop en background daemon
+- **Telegram Bot API** — Notificaciones de operaciones en tiempo real
 
 ---
 
-## Estado del proyecto al inicio de esta sesión
+## Visión del producto — hacia dónde vamos
 
-### ✅ Completado y funcionando
-- Bot loop con señales LONG/SHORT (score ±70), Stop Loss, Trailing Stop, Max Pérdida Diaria
-- Indicadores: EMA 10/55, Squeeze Momentum LazyBear, ADX, Volume Profile, S/R
-- MTF Guardarrail cascade 1W → 1D → 4H
-- Notificaciones Telegram completas
-- Conexión BingX con API keys correctas + fallback Binance con logging
+### Arquitectura objetivo (modular por capas)
+
+```
+CAPA 1 — Control (UI/Dashboard)
+  └── Panel de activos por exchange (Cripto BingX, Forex, Commodities)
+  └── Parámetros del trader (capital, SL, trailing, etc.)
+  └── Panel de señales en vivo por activo
+  └── Log de actividad y balance
+
+CAPA 2 — Indicadores
+  └── EMA, Squeeze Momentum, ADX, Volume Profile, S/R
+  └── MTF Guardarrail (1W → 1D → 4H)
+
+CAPA 3 — Gráficos
+  └── Interactivos, multi-activo, multi-exchange
+
+CAPA 4 — Exchanges (conectores modulares)
+  └── BingX (perpetual, crypto) — ACTIVO
+  └── Binance (spot, fallback) — ACTIVO
+  └── Forex broker (futuro)
+  └── Commodities broker (futuro)
+```
+
+### Modelo de distribución
+El producto se distribuye como **aplicación descargable** — cada trader lo instala localmente, configura sus propias API keys y opera su propio capital. No es SaaS. Las API keys nunca salen de la máquina del usuario.
+
+---
+
+## Estado actual del proyecto
+
+### ✅ Funcionando sólidamente
+- Bot loop: señales LONG/SHORT (score ±70), Stop Loss fijo, Trailing Stop, Max Pérdida Diaria
+- Indicadores: EMA 10/55, Squeeze Momentum LazyBear (exacto vs TradingView), ADX, Volume Profile 90 bins, S/R
+- MTF Guardarrail cascade 1W → 1D → 4H con cierre por compresión EMA
+- Notificaciones Telegram: entrada, salida, stop loss, trailing, max pérdida
+- Conexión BingX con API keys correctas + fallback Binance con logging explícito
 - Mini gráficos por activo seleccionado
-- Balance en tiempo real, log de actividad
+- Balance BingX en tiempo real, log de actividad
 
-### 🔴 Bug activo — PRIORIDAD 1
-**Panel `panel-senales-mini` no se renderiza visualmente.**
+### 🔴 Bug activo — PRIORIDAD INMEDIATA
+**`panel-senales-mini` no se renderiza en browser (Edge)**
 
-El panel existe en el código y está registrado correctamente. El bot calcula scores (visible en log: `LINK: ▼ SHORT score=-70`). Las tarjetas de señal no aparecen en el browser.
+El panel existe en código, el bot calcula scores (log muestra `LINK: ▼ SHORT score=-70`), pero las tarjetas de señal no aparecen visualmente.
 
-**Código relevante:**
+Código relevante en `main.py`:
 ```python
-# HTML — en _pagina_principal()
+# En _pagina_principal() — el div contenedor
 html.Div(id="panel-senales-mini", style={"marginTop": "8px"})
 
-# Helper
+# Helper que genera cada tarjeta
 def _senal_card(ticker, score): ...
 
-# Callback — cb_bot_status() — 9 outputs, sin State
+# En cb_bot_status() — el output
 Output("panel-senales-mini", "children")
 
-# Scores guardados en bot loop
+# En bot loop — donde se guardan los scores
 _bot_status["scores"][activo] = score
 
-# Activos guardados al iniciar bot
+# En cb_bot() — donde se guardan los activos al iniciar
 _bot_status["activos"] = [a for a in activos_lista if a != "BTC"]
 ```
 
-**Lo que ya se intentó sin éxito:**
-- Eliminar caché Python (`__pycache__`) ✅
-- Modo InPrivate en Edge ✅
-- Renombrar IDs con ñ a ASCII (`panel-señales-mini` → `panel-senales-mini`) ✅
-- Mover lectura de activos de `State(checklist)` a `_bot_status["activos"]` ✅
-- Placeholder con colores visibles ✅
+Lo ya intentado: caché Python eliminado, InPrivate Edge, IDs renombrados a ASCII, lectura de activos desde `_bot_status` en vez de State del checklist, colores más visibles.
 
-**Hipótesis más probable:** Conflicto entre el callback `render_page` (que carga `_pagina_principal()` en `page-content`) y `cb_bot_status` (que intenta actualizar `panel-senales-mini` dentro de ese layout dinámico). Dash puede tener race condition al actualizar componentes dentro de layouts generados por otro callback.
+**Hipótesis de Claude:** Race condition entre `render_page` callback (que genera `_pagina_principal()` en `page-content`) y `cb_bot_status` (que actualiza `panel-senales-mini` dentro de ese layout dinámico). Edge puede estar procesando los updates en orden incorrecto.
 
-### ⚠️ Bugs secundarios conocidos
-- `Sin Stop Fijo OK` aparece en vez de `Stop Loss −5.0%` (mismo patrón de rendering)
-- Slider capital muestra 20% aunque config tiene 5% (cosmético)
-- Label activos muestra texto viejo aunque `TRANSLATIONS["es"]["assets"]` está actualizado
+**Solución sugerida por Claude para el próximo turno:** Mover `panel-senales-mini` del layout dinámico (`_pagina_principal()`) al layout estático (`app.layout`) directamente, para que Dash siempre sepa dónde está y no dependa del routing de páginas.
 
-### 📋 Roadmap (en orden)
-1. **[AHORA]** Reparar `panel-senales-mini`
-2. Historial de trades persistente (`trades_history.json`)
-3. P&L en tiempo real de posición abierta
-4. Refactorizar `main.py` en módulos separados (`ui.py`, `indicators.py`, `exchange/`)
-5. Setup wizard para nuevos usuarios
-6. Soporte multi-exchange (Binance como segundo conector)
+### ⚠️ Bugs secundarios (mismo patrón de rendering)
+- `Sin Stop Fijo OK` en vez de `Stop Loss −5.0%`
+- Slider capital muestra 20% aunque config tiene `pct_capital: 5`
+- Label activos no refleja cambios de `TRANSLATIONS["es"]["assets"]`
+
+### 📋 Roadmap completo — en orden de prioridad
+
+| # | Feature | Estado |
+|---|---|---|
+| 1 | Panel señales por activo (`panel-senales-mini`) | 🔴 Bug rendering |
+| 2 | Historial de trades persistente | ⏳ Pendiente |
+| 3 | P&L en tiempo real de posición abierta | ⏳ Pendiente |
+| 4 | Refactorizar en módulos (`ui.py`, `indicators.py`, `exchange/`) | ⏳ Pendiente |
+| 5 | Setup wizard para nuevos usuarios | ⏳ Pendiente |
+| 6 | Segundo exchange conector (Binance completo) | ⏳ Pendiente |
+| 7 | Top 20 CoinMarketCap dinámico (API call) | ⏳ Pendiente |
+| 8 | Backtesting con datos históricos | ⏳ Pendiente |
+| 9 | Métricas de performance (Sharpe, drawdown, win rate) | ⏳ Pendiente |
+| 10 | Forex / Commodities (exchanges distintos) | 🔮 Largo plazo |
 
 ---
 
-## HANDOFF — Lo que el AI que termina debe dejar escrito
+## HANDOFF — Plantilla de traspaso entre AIs
 
-Al final de cada sesión de trabajo, el AI que estuvo activo actualiza esta sección:
+El AI que termina su turno llena esta sección antes de cerrar:
 
 ---
 
@@ -115,64 +182,86 @@ Al final de cada sesión de trabajo, el AI que estuvo activo actualiza esta secc
 
 **Fecha:** 25 mayo 2026
 **AI que trabajó:** Claude (Anthropic)
-**Commit GitHub:** `22b21d3`
+**Commit GitHub:** `dc886f1`
 
-**Qué se hizo en este turno:**
-- Implementé `panel-senales-mini` completo con tarjetas por activo y barra de progreso
-- Corregí el bug de BingX sin API keys (datos venían de Binance silenciosamente)
-- Añadí logging explícito al fallback Binance
-- Renombré todos los IDs con `ñ` a ASCII puro
-- Moví la lectura de activos del State del checklist a `_bot_status["activos"]`
-- Actualicé `iniciar_bot.bat` con flag `-B`
-- Documenté protocolo de debugging en `CLAUDE.md`
-- Creé `TEAM_PROTOCOL.md` (este archivo)
+**Qué se resolvió en este turno:**
+- Fix crítico: `ccxt.bingx()` ahora pasa API keys correctamente — antes todos los datos venían de Binance spot silenciosamente
+- Logging explícito cuando cae al fallback Binance
+- Implementación completa de `panel-senales-mini` con tarjetas por activo y barras de progreso
+- Renombrado de IDs con `ñ` a ASCII puro para compatibilidad JS/Dash
+- Arquitectura de scores: se guardan en `_bot_status["scores"]` y `_bot_status["activos"]` en vez de depender del State del checklist
+- `iniciar_bot.bat` actualizado con flag `-B` para evitar bytecode cache
+- Documentación en `CLAUDE.md` con reglas 12-14 y protocolo de debugging
+- Creación de `TEAM_PROTOCOL.md` (este archivo)
 
-**Estado al cerrar turno:**
-- Servidor corriendo con código nuevo confirmado por `[CHECK]`
-- Panel-senales-mini implementado pero NO visible todavía en browser
-- Bug de rendering Dash/Edge sin resolver
-- GitHub actualizado y sincronizado
+**Qué avanzó en el roadmap:**
+- Item #1 (panel señales): implementado en código, bug de rendering pendiente
 
-**Qué debe hacer el próximo AI:**
-1. Leer `CLAUDE.md` completo
-2. Leer este HANDOFF
-3. Clonar/pull desde GitHub: `git pull origin main`
-4. Reproducir el bug: arrancar servidor → seleccionar activos → iniciar bot → verificar si `panel-senales-mini` aparece
-5. Investigar el race condition entre `render_page` y `cb_bot_status` en Dash
-6. Proponer y testear solución — posibles enfoques:
-   - Usar `dcc.Store` intermedio para pasar scores al panel en vez de callback directo
-   - Mover `panel-senales-mini` fuera de `page-content` al layout estático
-   - Usar `clientside_callback` para actualizar el panel desde el cliente
+**Estado al cerrar:**
+- Servidor corre código nuevo (confirmado por `[CHECK]` en terminal)
+- Bug de rendering sin resolver — panel existe en código pero no visible en browser
+- GitHub sincronizado, branch main al día
 
-**Punto de vista de Claude para el próximo AI:**
-El problema central es que Dash tiene dificultades actualizando componentes dentro de layouts dinámicos (generados por otro callback) en Microsoft Edge. El mismo patrón aparece en 3 elementos distintos (`lbl-activos`, `Sin Stop Fijo`, `panel-senales-mini`). La solución más robusta probablemente es **mover los elementos dinámicos fuera del `page-content` callback** y ponerlos en el layout estático (`app.layout`) directamente, para que Dash siempre sepa dónde están.
+**Para el próximo AI — tarea inmediata:**
+Resolver el bug de rendering del `panel-senales-mini`. El enfoque recomendado por Claude: mover el div al layout estático (`app.layout`) en vez de dejarlo dentro de `_pagina_principal()`. Así Dash lo registra al arrancar y los callbacks siempre lo encuentran, sin depender del routing dinámico.
+
+**Para el próximo AI — visión a largo plazo:**
+Además de resolver el bug, proponer cómo avanzar en el item #2 del roadmap (historial de trades persistente). Pensar en la estructura del archivo `trades_history.json` y cómo integrarlo con el dashboard.
+
+**Punto de vista de Claude para Kimi:**
+El problema recurrente de rendering en Edge (3 elementos distintos con el mismo síntoma) apunta a que Dash tiene un comportamiento inconsistente con layouts dinámicos en Edge. No es un bug de lógica Python — es un problema de cómo Dash/React sincroniza el DOM en este browser. La solución arquitectónica limpia es sacar los elementos críticos del layout dinámico y ponerlos en el estático.
 
 ---
 
-## Cómo el próximo AI comienza su turno
+## Cómo comienza el turno de cada AI
 
 ```
-1. Lee CLAUDE.md completo
-2. Lee TEAM_PROTOCOL.md (este archivo) — especialmente el HANDOFF
-3. git pull origin main
-4. Reproduce el bug actual
-5. Propone solución con razonamiento
-6. Implementa, testea, confirma con Eduardo
-7. Actualiza HANDOFF al final con: qué hizo, qué estado quedó, qué sigue
-8. git add . && git commit && git push
-9. Informa a Eduardo que el turno terminó y el repo está actualizado
+PASO 1 — Contexto
+  └── Leer CLAUDE.md completo
+  └── Leer TEAM_PROTOCOL.md (este archivo, especialmente el HANDOFF)
+  └── git pull origin main
+
+PASO 2 — Diagnóstico
+  └── Revisar el estado actual del bug o tarea asignada
+  └── Dar tu punto de vista honesto: ¿estás de acuerdo con la hipótesis del AI anterior?
+  └── Si tienes una perspectiva distinta, exponla con razones concretas
+
+PASO 3 — Ejecución
+  └── Implementar solución
+  └── Verificar que funciona
+  └── Confirmar con Eduardo antes de cerrar
+
+PASO 4 — Avance en roadmap
+  └── Además del bug, avanzar al menos un paso del roadmap
+  └── O proponer con fundamento qué sigue y por qué
+
+PASO 5 — Cierre
+  └── Actualizar HANDOFF en este archivo
+  └── git add . && git commit -m "descripción clara" && git push origin main
+  └── Informar a Eduardo: "Turno terminado. Repo actualizado. Commit: [hash]. Próximo paso: [qué sigue]."
 ```
 
 ---
 
-## Filosofía del producto
+## Prompt listo para iniciar sesión con cualquier AI
 
-Este no es un proyecto de garage. Es un producto de trading profesional que se va a distribuir. Eso significa:
+Copia y pega esto al inicio de cada sesión:
 
-- **Calidad sobre velocidad** — Mejor hacer menos cosas bien hechas que muchas a medias
-- **Sin errores silenciosos** — Todo fallo debe loggearse, nada se traga con `except: pass`
-- **Modularidad** — Cada componente separado, comunicándose por interfaces claras
-- **El trader primero** — Cada decisión de UI/UX se evalúa desde: "¿Le sirve al trader para operar mejor?"
+> *"Eres parte de un equipo de tres: tú (AI), Claude (Anthropic) y yo, Eduardo. Estamos construyendo AERO BOT PRO, un trading bot profesional en Python Dash. Este es un proyecto serio — no de garage — que se va a distribuir a traders reales.*
+>
+> *Antes de hacer cualquier cosa, lee estos dos archivos del repositorio:*
+> *1. `CLAUDE.md` — arquitectura, reglas críticas, bugs conocidos*
+> *2. `TEAM_PROTOCOL.md` — cómo trabajamos en equipo y el último HANDOFF*
+>
+> *Repositorio: https://github.com/viajandoa120fps-cmyk/TradingBot.git*
+> *Carpeta local: `C:\Users\Dell\Desktop\TradingBot\`*
+>
+> *Una vez que hayas leído ambos archivos:*
+> *1. Dime qué entendiste del estado actual del proyecto*
+> *2. Da tu punto de vista sobre el bug activo y cómo lo resolverías*
+> *3. Propón también cómo avanzarías en el roadmap a largo plazo*
+>
+> *Actúa como un desarrollador senior con criterio propio. No me des la razón automáticamente. Si algo está mal o hay una mejor forma de hacerlo, dímelo directamente."*
 
 ---
 
