@@ -239,14 +239,24 @@ El AI que termina su turno llena esta sección antes de cerrar:
 - GitHub: pendiente push (ver abajo)
 - Servidor: reiniciar para aplicar cambios
 
-**Para el próximo AI — tarea inmediata:**
-**Fix bug modal auto-open** (10 minutos, antes de cualquier otra cosa):
-- El modal de historial se abre solo al recargar la página
-- Causa: `btn-historial` está dentro de `_pagina_principal()` (layout dinámico) → Edge dispara el callback al crearla
-- Fix: mover el botón `btn-historial` al `app.layout` estático (fuera de `page-content`), colocándolo en una posición absoluta/fija sobre la pantalla o directamente en el layout
-- Alternativa más simple: poner el botón justo antes de `html.Div(id="page-content")` en `app.layout`, con posición fija en la esquina inferior derecha de la pantalla
+**Para el próximo AI — tarea inmediata (pedido explícito de Eduardo):**
 
-Después del fix, continuar con **Item #3: P&L en tiempo real de la posición abierta**
+**Indicador LED superior derecho — 3 estados:**
+Eduardo quiere que el indicador de conexión en la esquina superior derecha muestre 3 estados en vez de 2:
+- 🔴 **DESCONECTADO** — bot no iniciado (estado actual: funciona ✅)
+- 🟡 **CONECTANDO** — bot iniciado pero aún fetching datos (nuevo, ~15-30 seg)
+- 🟢 **CONECTADO** — bot corriendo con datos en `_bot_status` (estado actual: funciona ✅)
+
+**Implementación sugerida:**
+- `led-dot` ya existe con clases CSS `desconectado` / `""` (verde)
+- Agregar clase CSS `conectando` (color amarillo/naranja parpadeante) en `assets/`
+- En `cb_bot`: al iniciar bot → set `store-bot=True` → LED pasa a "conectando"
+- En `cb_bot_status`: cuando `_bot_status["scores"]` tenga al menos 1 entrada → LED pasa a "conectado"
+- El texto `led-txt` debe mostrar "CONECTANDO..." con puntos animados
+
+**Archivos a modificar:** `main.py` (cb_bot, cb_bot_status, CSS class), `assets/centurion.css` o `assets/custom.css`
+
+**Después de este fix:** continuar con item #3 roadmap (P&L en tiempo real) y fix del modal auto-open.
 
 **Para el próximo AI — comando correcto para matar el servidor en esta máquina:**
 ```powershell
