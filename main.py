@@ -1,8 +1,16 @@
 """
-AERO BOT PRO - Dashboard Elite v2.1
-Puerto 8051 | Multi-pagina | Top 20 CoinMarketCap
-AERO LADDER v2 implementado — apalancamiento dinámico por racha
+AERO BOT PRO - Dashboard Elite v3.0
+Puerto 8051 | Multi-pagina | MTF v3 predictivo
+AERO LADDER v2 | calcular_score v3 anticipatorio
 """
+
+import sys
+import io
+# Forzar UTF-8 en consola Windows (evita UnicodeEncodeError con emojis en print)
+if hasattr(sys.stdout, 'buffer'):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'buffer'):
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 import dash
 from dash import dcc, html, Input, Output, State
