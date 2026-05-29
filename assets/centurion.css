@@ -428,62 +428,127 @@ body::before {
     flex-shrink: 0;
 }
 
+/* ── Score bar — layout limpio sin superposición ────────────────────────────
+   ACTIVO  NÚMERO  SHORT ◄────bar────► LONG  ETIQUETA
+   Cada elemento en su propio espacio, nada se pisa.
+─────────────────────────────────────────────────────────────────────────── */
+
+#scoring-bar, #d-scoring-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    background: var(--negro-card);
+    border-bottom: 1px solid var(--negro-borde);
+    min-height: 52px;
+}
+
+.sc-activo {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    color: #5a5a7a;
+    flex-shrink: 0;
+    min-width: 36px;
+}
+
 .sc-numero {
     font-family: 'Barlow Condensed', sans-serif;
-    font-size: 44px;
+    font-size: 36px;
     font-weight: 900;
     line-height: 1;
-    min-width: 72px;
+    min-width: 68px;
     text-align: right;
-    color: var(--dorado-vivo);
-    text-shadow: 0 0 20px rgba(200,168,75,0.4);
-    transition: color 0.4s ease, text-shadow 0.4s ease;
     flex-shrink: 0;
+    color: var(--dorado-vivo);
+    text-shadow: 0 0 16px rgba(200,168,75,0.4);
+    transition: color 0.4s ease, text-shadow 0.4s ease;
 }
+.sc-numero.long  { color: var(--verde-led); text-shadow: 0 0 16px rgba(0,255,136,0.4); }
+.sc-numero.short { color: var(--rojo-led);  text-shadow: 0 0 16px rgba(255,51,85,0.4); }
 
-.sc-numero.long  {
-    color: var(--verde-led);
-    text-shadow: 0 0 20px rgba(0,255,136,0.4);
+.sc-lado {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    flex-shrink: 0;
+    width: 44px;
 }
-.sc-numero.short {
-    color: var(--rojo-led);
-    text-shadow: 0 0 20px rgba(255,51,85,0.4);
-}
+.sc-lado-short { color: var(--rojo-led);  text-align: right; }
+.sc-lado-long  { color: var(--verde-led); text-align: left;  }
 
-.sc-barra-wrap {
+/* contenedor de la barra — sin texto dentro */
+.sc-barra-central-wrap {
     flex: 1;
-    height: 8px;
-    background: var(--negro-borde);
-    border-radius: 4px;
-    overflow: hidden;
+    position: relative;
+    height: 28px;
+    display: flex;
+    align-items: center;
 }
 
-.sc-barra {
-    height: 100%;
-    border-radius: 4px;
-    transition: width 0.8s ease, background 0.5s ease;
+.sc-barra-track {
+    position: absolute;
+    left: 0; right: 0;
+    height: 5px;
+    background: #1a1a2e;
+    border-radius: 3px;
 }
 
+.sc-barra-centro {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 2px;
+    height: 14px;
+    background: #3a3a5a;
+    border-radius: 1px;
+    z-index: 2;
+}
+
+/* ── ANTI-PARPADEO DE GRÁFICOS ─────────────────────────────────────────────
+   Dash oscurece los componentes mientras el callback está corriendo.
+   Esto evita que el gráfico de precio desaparezca durante las actualizaciones.
+   uirevision (en Python) evita el reset de zoom/pan.
+   Esta regla CSS evita el flash visual de carga. Juntos = sin parpadeo. */
+#grafico-principal[data-dash-is-loading="true"],
+#grafico-principal[data-dash-is-loading="true"] .js-plotly-plot,
+#d-grafico-principal[data-dash-is-loading="true"],
+#d-grafico-principal[data-dash-is-loading="true"] .js-plotly-plot {
+    opacity: 1 !important;
+    visibility: visible !important;
+    transition: none !important;
+}
+
+.sc-barra-activa {
+    position: absolute;
+    height: 5px;
+    border-radius: 3px;
+    transition: left 0.8s ease, width 0.8s ease, background 0.5s ease;
+    z-index: 1;
+}
+
+/* dirección — CORTO / ESPERAR / LARGO — al final, sin pisarse con nada */
 .sc-etiqueta {
     font-family: 'Barlow Condensed', sans-serif;
-    font-size: 18px;
+    font-size: 16px;
     font-weight: 700;
     letter-spacing: 0.22em;
-    min-width: 90px;
+    min-width: 76px;
     text-align: left;
-    transition: color 0.4s ease;
     flex-shrink: 0;
+    transition: color 0.4s ease;
 }
 
 /* ── Gráfico ────────────────────────────────────────────────────────────────── */
 
 .grafico-wrap {
-    flex: 1;
-    min-height: 340px;
     border: 1px solid var(--negro-borde);
     border-radius: 4px;
     overflow: hidden;
     background: var(--negro-card);
+    /* Sin flex: 1 — el dcc.Graph controla su propia altura con calc() */
 }
 
 .guardarrail-grid {

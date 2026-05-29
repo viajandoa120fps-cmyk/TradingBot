@@ -1,7 +1,7 @@
 """
-AERO BOT PRO - Dashboard Elite v3.0
+AERO BOT PRO - Dashboard Elite v3.3
 Puerto 8051 | Multi-pagina | MTF v3 predictivo
-AERO LADDER v2 | calcular_score v3 anticipatorio
+AERO LADDER v2 | calcular_score v3.3 anticipatorio
 """
 
 import sys
@@ -431,6 +431,17 @@ TF_MAP = {
     "1W": "1w", "1D": "1d", "4H": "4h", "2H": "2h", "1H": "1h", "15m": "15m",
 }
 
+# ─── S/R LOOKBACK (velas mínimas por TF para persistencia garantizada) ────────
+# STRATEGY.md Regla V3: 4H=45 días, 1D=150 días, 1W=365 días
+_SR_LOOKBACK = {
+    "1W":  55,   # 365 días / 7 ≈ 52 semanas + buffer
+    "1D": 160,   # 150 días + buffer
+    "4H": 280,   # 45 días × 6 velas/día + buffer
+    "2H": 300,   # 45 días × 12 velas/día (cap por rendimiento)
+    "1H": 300,   # cap por rendimiento
+    "15m": 200,  # default
+}
+
 # ─── BOT GLOBAL STATE ─────────────────────────────────────────────────────────
 
 _bot_thread = None
@@ -522,6 +533,237 @@ def _volume_profile(df, bins=90):
     poc_idx = int(np.argmax(vols))
     poc = (niveles[poc_idx] + niveles[poc_idx + 1]) / 2
     return niveles, vols, poc
+
+def _detectar_sr_persistentes(df, n_soporte=5, n_resistencia=5, tolerancia_pct=0.015):
+    """
+    STRATEGY.md Reglas V1-V7 — Detección de S/R persistentes.
+
+    Parámetros calibrados para encontrar ZONAS REALES (no precios aleatorios):
+      - order=15: solo pivots con ventana de 15 barras a cada lado (muy significativos)
+      - tolerancia=1.5%: agrupa precios dentro del 1.5% como una sola zona
+      - n=5+5: candidatos; en el chart solo se dibujan los de fuerza>=2 (2+ toques)
+      - fuerza=1 → precio visitado una sola vez → no es S/R, ignorar en chart
+
+    Retorna: lista de dicts {precio, tipo, fuerza}
+      - tipo:   'soporte' | 'resistencia'
+      - fuerza: número de pivots agrupados en ese nivel (1=fresco, 2+=zona real)
+      - STRATEGY.md V6: misma función usada por chart Y calcular_score()
+    """
+    max_idx = argrelextrema(df["high"].values, np.greater, order=15)[0]
+    min_idx = argrelextrema(df["low"].values,  np.less,   order=15)[0]
+    precio_actual = float(df["close"].iloc[-1])
+
+    def _agrupar(indices, columna):
+        if len(indices) == 0:
+            return []
+        precios = sorted(float(df[columna].iloc[i]) for i in indices)
+        grupos, grupo = [], [precios[0]]
+        for p in precios[1:]:
+            if (p - grupo[0]) / grupo[0] < tolerancia_pct:
+                grupo.append(p)
+            else:
+                grupos.append(grupo)
+                grupo = [p]
+        grupos.append(grupo)
+        return [{"precio": float(np.mean(g)), "fuerza": len(g)} for g in grupos]
+
+    todos_res = _agrupar(max_idx, "high")
+    todos_sop = _agrupar(min_idx, "low")
+
+    # Resistencias: estrictamente por ENCIMA del precio actual
+    resistencias = sorted(
+        [r for r in todos_res if r["precio"] > precio_actual],
+        key=lambda x: x["precio"]          # ascendente → los 2 más cercanos primero
+    )[:n_resistencia]
+
+    # Soportes: estrictamente por DEBAJO del precio actual
+    soportes = sorted(
+        [s for s in todos_sop if s["precio"] < precio_actual],
+        key=lambda x: x["precio"], reverse=True  # descendente → los 2 más cercanos primero
+    )[:n_soporte]
+
+    return [{"tipo": "resistencia", **r} for r in resistencias] + \
+           [{"tipo": "soporte",     **s} for s in soportes]
+
+
+def _detectar_trendlines(df, order=10, n_pivots=4):
+    """
+    Detecta trendlines DIAGONALES usando solo los ÚLTIMOS N pivots significativos.
+
+    L99 Eduardo (mayo 2026): usar todos los pivots históricos producía líneas casi
+    planas. Con los últimos N pivots se obtiene el CANAL REAL del precio actual.
+
+    Fix fractal borde derecho: argrelextrema no detecta pivots dentro de las últimas
+    `order` barras (no hay suficientes barras después para confirmar). Si el último
+    pivot confirmado está a más de `order` barras del borde, se agrega el mínimo/máximo
+    de esa ventana final como punto adicional de la regresión.
+
+    Retorna dict con keys 'soporte' y 'resistencia', cada uno:
+      {"x": [t_inicio, t_fin], "y": [y_inicio, y_fin], "slope": float}
+      o None si no hay suficientes pivots.
+    """
+    max_idx = argrelextrema(df["high"].values, np.greater, order=order)[0]
+    min_idx = argrelextrema(df["low"].values,  np.less,   order=order)[0]
+    result  = {"soporte": None, "resistencia": None}
+    n       = len(df)
+
+    def _agregar_borde_bajo(idx_arr):
+        """Si el último pivot detectado está lejos del borde, añade el mínimo reciente."""
+        if len(idx_arr) == 0:
+            return idx_arr
+        ultimo = idx_arr[-1]
+        if n - 1 - ultimo > order:          # hay al menos `order` barras sin pivot
+            ventana = df["low"].values[ultimo + 1:]
+            if len(ventana) > 0:
+                pos_rel = int(np.argmin(ventana))
+                pos_abs = ultimo + 1 + pos_rel
+                # Solo añadir si es realmente más bajo que el último pivot confirmado
+                if df["low"].values[pos_abs] < df["low"].values[ultimo]:
+                    return np.append(idx_arr, pos_abs)
+        return idx_arr
+
+    def _agregar_borde_alto(idx_arr):
+        """Si el último pivot detectado está lejos del borde, añade el máximo reciente."""
+        if len(idx_arr) == 0:
+            return idx_arr
+        ultimo = idx_arr[-1]
+        if n - 1 - ultimo > order:
+            ventana = df["high"].values[ultimo + 1:]
+            if len(ventana) > 0:
+                pos_rel = int(np.argmax(ventana))
+                pos_abs = ultimo + 1 + pos_rel
+                if df["high"].values[pos_abs] > df["high"].values[ultimo]:
+                    return np.append(idx_arr, pos_abs)
+        return idx_arr
+
+    max_idx = _agregar_borde_alto(max_idx)
+    min_idx = _agregar_borde_bajo(min_idx)
+
+    # ── TRENDLINE RESISTENCIA — últimos N máximos ──────────────────────────
+    if len(max_idx) >= 2:
+        recientes = max_idx[-min(n_pivots, len(max_idx)):]
+        xs   = recientes.astype(float)
+        ys   = df["high"].values[recientes].astype(float)
+        m, b = np.polyfit(xs, ys, 1)
+        x0   = int(recientes[0])
+        x1   = n - 1
+        result["resistencia"] = {
+            "x": [df["tiempo"].iloc[x0], df["tiempo"].iloc[x1]],
+            "y": [m * x0 + b,            m * x1 + b],
+            "slope": m,
+        }
+
+    # ── TRENDLINE SOPORTE — últimos N mínimos ─────────────────────────────
+    if len(min_idx) >= 2:
+        recientes = min_idx[-min(n_pivots, len(min_idx)):]
+        xs   = recientes.astype(float)
+        ys   = df["low"].values[recientes].astype(float)
+        m, b = np.polyfit(xs, ys, 1)
+        x0   = int(recientes[0])
+        x1   = n - 1
+        result["soporte"] = {
+            "x": [df["tiempo"].iloc[x0], df["tiempo"].iloc[x1]],
+            "y": [m * x0 + b,            m * x1 + b],
+            "slope": m,
+        }
+
+    return result
+
+
+def _detectar_ondas_elliott(df, order=6):
+    """
+    Detecta y etiqueta Ondas de Elliott automáticamente.
+
+    Secuencia buscada: W0 → W1 → W2 → W3 → W4 → W5 → Wa → Wb → Wc
+    Patrón alcista:  L(0) H(1) L(2) H(3) L(4) H(5) L(a) H(b) L(c)
+    Patrón bajista:  H(0) L(1) H(2) L(3) H(4) L(5) H(a) L(b) H(c)
+
+    Reglas Elliott aplicadas:
+    - Alcista: W2>W0 (no retrocede 100%), W3>W1 (nuevo máximo), W4>W0, W5>W3
+    - Bajista: invertidas
+    - Si no se encuentra patrón válido: etiqueta los últimos N pivots (best-effort)
+
+    Retorna: lista de dicts {tiempo, precio, label, tipo} o []
+    """
+    if len(df) < order * 4:
+        return []
+
+    highs_idx = argrelextrema(df["high"].values, np.greater, order=order)[0]
+    lows_idx  = argrelextrema(df["low"].values,  np.less,   order=order)[0]
+
+    if len(highs_idx) < 3 or len(lows_idx) < 3:
+        return []
+
+    # Combinar y ordenar todos los pivots cronológicamente
+    pivots = []
+    for i in highs_idx:
+        pivots.append({"idx": i, "tipo": "H",
+                       "precio": float(df["high"].iloc[i]),
+                       "tiempo": df["tiempo"].iloc[i]})
+    for i in lows_idx:
+        pivots.append({"idx": i, "tipo": "L",
+                       "precio": float(df["low"].iloc[i]),
+                       "tiempo": df["tiempo"].iloc[i]})
+    pivots.sort(key=lambda x: x["idx"])
+
+    # Limpiar: alternar H/L estrictamente, más extremo gana si hay consecutivos
+    clean = []
+    for p in pivots:
+        if not clean or clean[-1]["tipo"] != p["tipo"]:
+            clean.append(dict(p))
+        else:
+            if p["tipo"] == "H" and p["precio"] > clean[-1]["precio"]:
+                clean[-1] = dict(p)
+            elif p["tipo"] == "L" and p["precio"] < clean[-1]["precio"]:
+                clean[-1] = dict(p)
+
+    if len(clean) < 6:
+        return []
+
+    wave_labels = ["W0", "W1", "W2", "W3", "W4", "W5", "Wa", "Wb", "Wc"]
+    n_take      = min(9, len(clean))
+    best        = None
+
+    # Buscar patrón válido desde los pivots más recientes hacia atrás
+    for start in range(max(0, len(clean) - 14), len(clean) - 5):
+        seg     = clean[start : start + n_take]
+        if len(seg) < 6:
+            continue
+
+        is_bull = seg[0]["tipo"] == "L"
+        exp     = (["L","H"] * 5)[:len(seg)] if is_bull else (["H","L"] * 5)[:len(seg)]
+        if not all(p["tipo"] == e for p, e in zip(seg, exp)):
+            continue
+
+        n  = min(6, len(seg))
+        pp = [seg[i]["precio"] for i in range(n)]
+
+        if is_bull:
+            ok = (
+                (n < 3 or pp[2] > pp[0]) and   # W2 no retrocede al inicio
+                (n < 4 or pp[3] > pp[1]) and   # W3 nuevo máximo
+                (n < 5 or pp[4] > pp[0]) and   # W4 sobre W0
+                (n < 6 or pp[5] > pp[3])        # W5 nuevo máximo
+            )
+        else:
+            ok = (
+                (n < 3 or pp[2] < pp[0]) and
+                (n < 4 or pp[3] < pp[1]) and
+                (n < 5 or pp[4] < pp[0]) and
+                (n < 6 or pp[5] < pp[3])
+            )
+
+        if ok:
+            best = seg[:n_take]
+            break   # más reciente que cumpla reglas
+
+    if best is None:
+        # Fallback: últimos pivots sin validación (best-effort)
+        best = clean[-(min(8, len(clean))):]
+
+    labels = wave_labels[:len(best)]
+    return [{**p, "label": lb} for p, lb in zip(best, labels)]
+
 
 def _analizar_mtf(activo, ema_comp_pct=1.0):
     """
@@ -632,14 +874,49 @@ def _analizar_mtf(activo, ema_comp_pct=1.0):
 
         return result
 
-    except Exception:
+    except Exception as e:
+        print(f"[⚠ MTF] {activo}: {e}")
         return _default
 
 def calcular_score(df):
     """
-    Score anticipatorio v3 — predice dirección futura, no describe el presente.
-    Filosofía: pendiente (slope) de EMA, valleys/peaks de Squeeze, ADX naciente.
-    Parámetros: slope sobre 3 velas, ADX mínimo en últimas 10 velas.
+    Score anticipatorio v3.1 — predice dirección futura, no describe el presente.
+
+    Cambios v3.1 (mayo 2026):
+    - Squeeze peak/valley: pesos +/-40 (era 25). Peak es la señal más anticipatoria.
+    - Squeeze accel: +/-30 (era 25). Diferencia peak vs accel porque peak es más temprano.
+    - EMA slope sin aceleración: +/-8 (era 12). EMA es reactiva — no debe dominar.
+    - ADX direction-aware: amplifica la señal dominante, no siempre suma positivo.
+      ADX mide FUERZA, no dirección. Si el bot está en short, ADX creciente confirma short.
+    - S/R tolerancia 1.5% (era 0.5%). Detecta rechazo cerca de resistencia/soporte.
+    - S/R peso +/-20 (era 15). Rechazo en resistencia es señal de entrada fuerte.
+    - S/R order=5 (era 10). Detecta niveles más recientes y relevantes.
+
+    Cambios v3.2 (mayo 2026):
+    - Squeeze bear_post_peak: +/-25 — squeeze cayendo en terreno positivo (1-2 barras post-techo).
+      Soluciona el caso donde el peak ya paso pero el momentum sigue cayendo y positivo.
+    - Squeeze bull_post_valley: +/-25 — squeeze subiendo en terreno negativo (1-2 barras post-fondo).
+    - Fallback direction-aware: positivo-cayendo = -10 (era +10). Perder fuerza es bajista, no alcista.
+      negativo-subiendo = +10 (era -10). Recuperarse es alcista aunque siga negativo.
+
+    Cambios v3.3 (mayo 2026):
+    - S/R breakout detection (Eduardo Andrade):
+      Si soporte testeado se rompe hacia abajo → -25 (breakout bajista, mas fuerte que rechazo)
+      Si resistencia se rompe hacia arriba → +25 (breakout alcista, techo se convierte en soporte)
+      Rango de deteccion breakout: 0-5% mas alla del nivel.
+      Zonas de rebote/rechazo mantienen +-20 con distancia direccional (no abs).
+      Si soporte y resistencia dan senales, gana la de mayor peso absoluto.
+
+    Cambios v3.4 (mayo 2026):
+    - K-8: Ultimo estiron (Eduardo Andrade, 27 mayo 2026):
+      Si precio toca resistencia (-20 S/R base) Y tendencia es bajista (EMA10<EMA55 o squeeze<0)
+      → bonus adicional -20 pts. Total: -40 pts solo de S/R.
+      El mercado engana: parece que no llegara al techo, pero lo toca y cae.
+      Guardarrail S/R muestra prefijo "K8" cuando activo.
+    - K-9: Segunda confirmacion (Eduardo Andrade, 27 mayo 2026):
+      Si EMA10 < EMA55 (cruce bajista establecido) Y squeeze < 0 Y precio NO esta en resistencia
+      → -15 pts. Entrada mas tardia pero valida. "Con mas cuidado" (menor peso que K-8).
+      Mutuamente exclusivo con K-8.
     """
     if len(df) < 10:
         return 0, {}
@@ -648,119 +925,180 @@ def calcular_score(df):
     pts, gr = 0, {}
 
     # ── EMA SLOPE ANTICIPATORIO ───────────────────────────────────────────────
-    # Pendiente = cambio % de EMA10 en 3 velas. Señal: pendiente positiva Y acelerando.
-    ema10_now   = float(df.iloc[-1]["EMA10"])
-    ema10_p3    = float(df.iloc[-4]["EMA10"])   # 3 velas atrás
-    ema10_p6    = float(df.iloc[-7]["EMA10"])   # 6 velas atrás (slope anterior)
-    slope_now   = (ema10_now - ema10_p3) / ema10_p3 * 100
-    slope_prev  = (ema10_p3  - ema10_p6) / ema10_p6 * 100
+    # Pendiente = cambio % de EMA10 en 3 velas. Solo pesa fuerte si acelera.
+    ema10_now  = float(df.iloc[-1]["EMA10"])
+    ema10_p3   = float(df.iloc[-4]["EMA10"])
+    ema10_p6   = float(df.iloc[-7]["EMA10"])
+    slope_now  = (ema10_now - ema10_p3) / ema10_p3 * 100
+    slope_prev = (ema10_p3  - ema10_p6) / ema10_p6 * 100
 
-    bull_ema_strong = slope_now > 0 and slope_now > slope_prev   # acelerando al alza
-    bear_ema_strong = slope_now < 0 and slope_now < slope_prev   # acelerando a la baja
+    bull_ema_strong = slope_now > 0 and slope_now > slope_prev
+    bear_ema_strong = slope_now < 0 and slope_now < slope_prev
 
     if bull_ema_strong:
         pts += 30; ema_est = "on";  ema_val = f"▲ slope {slope_now:+.3f}%"
     elif slope_now > 0:
-        pts += 12; ema_est = "off"; ema_val = f"↗ slope {slope_now:+.3f}%"
+        pts +=  8; ema_est = "off"; ema_val = f"↗ slope {slope_now:+.3f}%"
     elif bear_ema_strong:
         pts -= 30; ema_est = "war"; ema_val = f"▼ slope {slope_now:+.3f}%"
     else:
-        pts -= 12; ema_est = "war"; ema_val = f"↘ slope {slope_now:+.3f}%"
+        pts -=  8; ema_est = "war"; ema_val = f"↘ slope {slope_now:+.3f}%"
     gr["EMA"] = {"estado": ema_est, "valor": ema_val}
 
-    # ── SQUEEZE MOMENTUM — VALLEY/PEAK + ACELERACIÓN ──────────────────────────
-    # Señal bull: valle (giro al alza) O momentum positivo acelerando.
-    # Señal bear: pico (giro a la baja) O momentum negativo acelerando.
+    # ── SQUEEZE MOMENTUM — PEAK/VALLEY + ACELERACIÓN (v3.2) ─────────────────
+    # Peak/Valley: giro exacto — señal más anticipatoria (±40).
+    # Post-peak/valley: 3 barras consecutivas declinando — todavía en terreno positivo/negativo (±25).
+    # Accel: ya cruzó cero, acelerando en nueva dirección (±30).
+    # Fallback: positivo-creciendo +10 / positivo-cayendo -10 / negativo-subiendo +10 / negativo-cayendo -10.
     mom_now   = float(df.iloc[-1]["momentum"])
     mom_prev  = float(df.iloc[-2]["momentum"])
     mom_prev2 = float(df.iloc[-3]["momentum"])
 
-    bull_valley = mom_prev2 > mom_prev and mom_prev < mom_now  # mínimo local en mom_prev
-    bull_accel  = mom_now > mom_prev and mom_prev > 0          # acelerando positivo
-    bull_mom    = bull_valley or bull_accel
-
-    bear_peak  = mom_prev2 < mom_prev and mom_prev > mom_now   # máximo local en mom_prev
-    bear_accel = mom_now < mom_prev and mom_prev < 0           # acelerando negativo
-    bear_mom   = bear_peak or bear_accel
+    bull_valley     = mom_prev2 > mom_prev and mom_prev < mom_now                   # min local → giro alcista
+    bull_post_valley= mom_prev2 < mom_prev < mom_now and mom_now < 0               # post-fondo subiendo, aún negativo
+    bull_accel      = mom_now > mom_prev and mom_prev > 0                           # acelerando positivo
+    bear_peak       = mom_prev2 < mom_prev and mom_prev > mom_now                   # max local → giro bajista
+    bear_post_peak  = mom_prev2 > mom_prev > mom_now and mom_now > 0               # post-techo cayendo, aún positivo
+    bear_accel      = mom_now < mom_prev and mom_prev < 0                           # acelerando negativo
 
     growing = bool(mom_now > mom_prev)
-    if bull_mom:
-        pts += 25; mom_est = "on"
-    elif bear_mom:
-        pts -= 25; mom_est = "war"
+    if bear_peak:
+        pts -= 40; mom_est = "war"      # techo exacto: señal más anticipatoria SHORT
+    elif bull_valley:
+        pts += 40; mom_est = "on"       # fondo exacto: señal más anticipatoria LONG
+    elif bear_post_peak:
+        pts -= 25; mom_est = "war"      # post-techo: squeeze cayendo aún positivo = SHORT fuerte
+    elif bull_post_valley:
+        pts += 25; mom_est = "on"       # post-fondo: squeeze subiendo aún negativo = LONG fuerte
+    elif bear_accel:
+        pts -= 30; mom_est = "war"      # ya negativo y acelerando = confirmación SHORT
+    elif bull_accel:
+        pts += 30; mom_est = "on"       # ya positivo y acelerando = confirmación LONG
+    elif mom_now > 0 and growing:
+        pts += 10; mom_est = "off"      # positivo creciendo = leve alcista
     elif mom_now > 0:
-        pts += 10; mom_est = "off"
+        pts -= 10; mom_est = "war"      # positivo pero cayendo = perdiendo fuerza = bajista
+    elif mom_now < 0 and not growing:
+        pts -= 10; mom_est = "war"      # negativo cayendo = leve bajista
     else:
-        pts -= 10; mom_est = "war"
+        pts += 10; mom_est = "off"      # negativo subiendo = posible recuperación
     gr["SQUEEZE"] = {"estado": mom_est, "valor": f"{'▲' if growing else '▼'} {mom_now:.1f}"}
 
-    # ── ADX — FUERZA NACIENTE (anticipatorio) ─────────────────────────────────
-    # Señal: ADX cayó bajo 20 (sin tendencia) y ahora empieza a subir → nueva fuerza.
-    adx_now    = float(df.iloc[-1]["ADX"])
-    adx_prev   = float(df.iloc[-2]["ADX"])
-    adx_min10  = float(df["ADX"].iloc[-10:].min())   # mínimo en últimas 10 velas
-
-    adx_emerging = adx_min10 < 20 and adx_now > adx_prev    # naciendo desde mínimo
-    adx_strong   = adx_now >= 25 and adx_now > adx_prev     # establecida y creciendo
-
-    if adx_emerging:
-        pts += 10; adx_est = "on";  adx_txt = f"↑ {adx_now:.1f} (naciendo)"
-    elif adx_strong:
-        pts +=  5; adx_est = "on";  adx_txt = f"↑ {adx_now:.1f}"
-    elif adx_now < 20:
-        pts -= 10; adx_est = "off"; adx_txt = f"↓ {adx_now:.1f} (sin fuerza)"
-    else:
-        pts +=  0; adx_est = "off"; adx_txt = f"{adx_now:.1f}"
-    gr["ADX"] = {"estado": adx_est, "valor": adx_txt}
-
-    # ── VOLUME PROFILE POC (sin cambios) ─────────────────────────────────────
+    # ── VOLUME PROFILE POC ────────────────────────────────────────────────────
     _, _, poc = _volume_profile(df)
     sobre_poc = bool(u["close"] > poc)
-    pct_poc = (u["close"] - poc) / poc * 100
+    pct_poc   = (u["close"] - poc) / poc * 100
     pts += 10 if sobre_poc else -10
     gr["VOL PROFILE"] = {"estado": "on" if sobre_poc else "war",
                          "valor": f"{'↑' if sobre_poc else '↓'}{abs(pct_poc):.1f}%"}
 
-    # ── SOPORTE / RESISTENCIA (sin cambios) ──────────────────────────────────
-    max_idx = argrelextrema(df["high"].values, np.greater, order=10)[0]
-    min_idx = argrelextrema(df["low"].values, np.less,    order=10)[0]
-    precio = float(u["close"])
+    # ── SOPORTE / RESISTENCIA + BREAKOUT (v3.3) ─────────────────────────────
+    # 4 casos posibles:
+    #   precio SOBRE soporte  (0–1.5% encima)  → +20 (zona de rebote)
+    #   precio ROMPIÓ soporte (0–5%  debajo)   → -25 (breakout bajista — más fuerte que el rechazo)
+    #   precio BAJO resistencia (0–1.5% debajo) → -20 (zona de rechazo)
+    #   precio ROMPIÓ resistencia (0–5% encima) → +25 (breakout alcista — soporte anterior)
+    # Si ambos niveles dan señal, gana el de mayor abs(pts) para reflejar el más relevante.
+    # S/R via función compartida — STRATEGY.md V6 (única fuente de verdad)
+    precio  = float(u["close"])
     sr_pts, sr_val, sr_est = 0, "-", "off"
-    if len(min_idx):
-        s = df["low"].iloc[min_idx].values
-        c = s[np.argmin(np.abs(s - precio))]
-        if abs(precio - c) / precio < 0.005:
-            sr_pts, sr_val, sr_est = 15, f"S {c:.0f}", "on"
-    if len(max_idx):
-        r = df["high"].iloc[max_idx].values
-        c = r[np.argmin(np.abs(r - precio))]
-        if abs(precio - c) / precio < 0.005:
-            sr_pts, sr_val, sr_est = -15, f"R {c:.0f}", "war"
+
+    _niveles_sc      = _detectar_sr_persistentes(df)
+    _soportes_sc     = [n for n in _niveles_sc if n["tipo"] == "soporte"]
+    _resistencias_sc = [n for n in _niveles_sc if n["tipo"] == "resistencia"]
+
+    if _soportes_sc:
+        s_near = min(_soportes_sc, key=lambda n: abs(n["precio"] - precio))["precio"]
+        dist_s = (precio - s_near) / precio
+        if 0 <= dist_s < 0.015:
+            sr_pts, sr_val, sr_est = 20, f"S {s_near:.0f}", "on"
+        elif -0.05 < dist_s < 0:
+            sr_pts, sr_val, sr_est = -25, f"BREAK↓ {s_near:.0f}", "war"
+
+    if _resistencias_sc:
+        r_near = min(_resistencias_sc, key=lambda n: abs(n["precio"] - precio))["precio"]
+        dist_r = (precio - r_near) / precio
+        r_pts_new, r_val_new, r_est_new = 0, "-", "off"
+        if -0.015 < dist_r <= 0:
+            r_pts_new, r_val_new, r_est_new = -20, f"R {r_near:.0f}", "war"
+        elif 0 < dist_r < 0.05:
+            r_pts_new, r_val_new, r_est_new = 25, f"BREAK↑ {r_near:.0f}", "on"
+        if abs(r_pts_new) >= abs(sr_pts):
+            sr_pts, sr_val, sr_est = r_pts_new, r_val_new, r_est_new
+
     pts += sr_pts
     gr["S/R"] = {"estado": sr_est, "valor": sr_val}
+
+    # ── CONFIRMACIÓN CRUZADA — Squeeze peak/valley + S/R alineados ───────────
+    # Cuando el squeeze gira EN un nivel clave, la señal combinada es más fuerte
+    # que cada indicador por separado. Bonus adicional de ±15 pts.
+    if bear_peak and sr_est == "war":
+        pts -= 18   # squeeze en techo + rechazo de resistencia = setup SHORT fuerte
+    elif bull_valley and sr_est == "on":
+        pts += 18   # squeeze en fondo + rebote de soporte = setup LONG fuerte
+
+    # ── K-8: ÚLTIMO ESTIRÓN — resistencia tocada en tendencia bajista ─────────
+    # Eduardo K-8 (27 mayo 2026): el mercado engaña — parece que no llegará al techo
+    # pero da un último empujón y lo toca. Si la tendencia ya es bajista (EMA o squeeze),
+    # ese toque es una TRAMPA. Bonus SHORT -20 adicionales (total con base S/R: -40).
+    ema55_now         = float(df.iloc[-1]["EMA55"])
+    _contexto_bajista = (ema10_now < ema55_now) or (mom_now < 0)
+    _en_resistencia   = (sr_pts == -20)   # precio tocando resistencia (no breakout)
+
+    if _en_resistencia and _contexto_bajista:
+        pts -= 20   # K-8: último estirón — resistencia + tendencia bajista = SHORT fuerte
+        gr["S/R"]["valor"] = "K8 " + gr["S/R"]["valor"]
+
+    # ── K-9: SEGUNDA CONFIRMACIÓN — cruce EMA bajista + squeeze negativo ──────
+    # Eduardo K-9 (27 mayo 2026): entrada más tardía pero válida.
+    # EMA roja (55) ya cruzó encima de azul (10) Y squeeze ya es negativo.
+    # "Ya vamos con más cuidado" — Eduardo. Peso -15 (menor que K-8).
+    # Mutuamente exclusivo con K-8: si el precio está en resistencia es K-8 (más temprano).
+    elif not _en_resistencia and (ema10_now < ema55_now) and (mom_now < 0):
+        pts -= 15   # K-9: segunda confirmación bajista
+
+    # ── ADX — AMPLIFICADOR DE DIRECCIÓN (calculado al final) ─────────────────
+    # ADX mide FUERZA de tendencia, no dirección.
+    # Se calcula DESPUÉS de los demás para amplificar la señal dominante.
+    adx_now   = float(df.iloc[-1]["ADX"])
+    adx_prev  = float(df.iloc[-2]["ADX"])
+    adx_min10 = float(df["ADX"].iloc[-10:].min())
+
+    adx_emerging = adx_min10 < 20 and adx_now > adx_prev
+    adx_strong   = adx_now >= 25 and adx_now > adx_prev
+    adx_bonus    = 10 if adx_emerging else (5 if adx_strong else 0)
+
+    if adx_bonus > 0:
+        # Direction-aware: amplifica lo que ya domina (pts antes de ADX)
+        if pts >= 0:
+            pts += adx_bonus; adx_est = "on"
+        else:
+            pts -= adx_bonus; adx_est = "on"
+        adx_txt = f"↑ {adx_now:.1f} ({'naciendo' if adx_emerging else 'fuerte'})"
+    elif adx_now < 20:
+        pts -= 5; adx_est = "off"; adx_txt = f"↓ {adx_now:.1f} (sin fuerza)"
+    else:
+        adx_est = "off"; adx_txt = f"{adx_now:.1f}"
+    gr["ADX"] = {"estado": adx_est, "valor": adx_txt}
+
     gr["MTF"] = {"estado": "off", "valor": "-"}
     return max(-100, min(100, int(pts))), gr
 
-def crear_grafico(df, activo="BTC", compacto=False):
+def crear_grafico(df, activo="BTC", compacto=False, tf="4H", show_elliott=False):
     simbolo = SYMBOL_MAP.get(activo, "BTC/USDT")
     niveles, vols, poc = _volume_profile(df)
     poc_idx = int(np.argmax(vols))
     vol_max = max(vols) or 1
 
-    lineas = []
-    for idx_arr, col, color, name in [
-        (argrelextrema(df["high"].values, np.greater, order=10)[0], "high", "#ff4444", "Resistencia"),
-        (argrelextrema(df["low"].values, np.less, order=10)[0], "low", "#00e676", "Soporte"),
-    ]:
-        if len(idx_arr) >= 2:
-            i1, i2 = idx_arr[-2], idx_arr[-1]
-            y1, y2 = df[col].iloc[i1], df[col].iloc[i2]
-            pend = (y2 - y1) / (i2 - i1)
-            lineas.append({
-                "x": [df["tiempo"].iloc[i1], df["tiempo"].iloc[-1]],
-                "y": [y1, y2 + pend * (len(df) - 1 - i2)],
-                "color": color, "name": name,
-            })
+    # Trendlines diagonales — STRATEGY.md V1-V6
+    # Conectan últimos pivots de máximos (resistencia) y mínimos (soporte).
+    # Pendiente negativa en resistencia = techos bajando = estructura bajista.
+    # Pendiente positiva en soporte     = pisos subiendo = estructura alcista.
+    COLOR_SOPORTE = "#00e676"
+    COLOR_RESIST  = "#ff4444"
+
+    # Trendlines desactivadas por decisión de Eduardo (L99, mayo 2026).
+    # _detectar_trendlines() queda en el código para uso futuro.
 
     # Más espacio para ADX en vista detalle
     heights = [0.55, 0.20, 0.25] if not compacto else [0.60, 0.20, 0.20]
@@ -779,29 +1117,75 @@ def crear_grafico(df, activo="BTC", compacto=False):
     fig.add_trace(go.Scatter(x=df["tiempo"], y=df["EMA55"],
                              line=dict(color="#ef5350", width=1.8), name="EMA 55"), row=1, col=1)
 
-    for l in lineas:
-        fig.add_trace(go.Scatter(x=l["x"], y=l["y"], mode="lines",
-                                 line=dict(color=l["color"], width=1.5, dash="dot"), name=l["name"]), row=1, col=1)
+    # Trendlines desactivadas — ver nota arriba.
+
+    # S/R horizontales: eliminadas del chart por decisión de Eduardo (L99).
+    # _detectar_sr_persistentes() sigue usándose en calcular_score() para el scoring,
+    # pero NO se dibujan líneas horizontales en el gráfico.
+
+    # ── Ondas de Elliott (cuando toggle ON) ──────────────────────────────────
+    if show_elliott:
+        _EW_ORDER = {"1W": 3, "1D": 4, "4H": 6, "2H": 7, "1H": 8, "15m": 5}
+        _ew_order = _EW_ORDER.get(tf, 6)
+        _ondas    = _detectar_ondas_elliott(df, order=_ew_order)
+        if len(_ondas) >= 5:
+            # Colores: azul=impulsivas, rojo=correctivas, verde=Wb (rebote)
+            _EW_COL = {
+                "W0": "#888888",
+                "W1": "#2196F3", "W2": "#ef5350",
+                "W3": "#2196F3", "W4": "#ef5350",
+                "W5": "#2196F3",
+                "Wa": "#ef5350", "Wb": "#26a69a", "Wc": "#ef5350",
+            }
+            # Líneas entre ondas consecutivas
+            for _i in range(len(_ondas) - 1):
+                _o1, _o2 = _ondas[_i], _ondas[_i + 1]
+                _col_ew  = _EW_COL.get(_o2["label"], "#888888")
+                fig.add_trace(go.Scatter(
+                    x=[_o1["tiempo"], _o2["tiempo"]],
+                    y=[_o1["precio"], _o2["precio"]],
+                    mode="lines",
+                    line=dict(color=_col_ew, width=2.0),
+                    showlegend=False, hoverinfo="skip", opacity=0.9,
+                ), row=1, col=1)
+            # Etiquetas en cada punto de giro
+            for _o in _ondas:
+                _lbl    = _o["label"].replace("W", "")   # "W1"→"1", "Wa"→"a"
+                _yshift = 16 if _o["tipo"] == "H" else -20
+                fig.add_annotation(
+                    x=_o["tiempo"], y=_o["precio"],
+                    text=f"<b>{_lbl}</b>",
+                    showarrow=False,
+                    font=dict(size=13, color="#FFD700", family="Arial Black"),
+                    yshift=_yshift, row=1, col=1,
+                )
 
     t_max = df["tiempo"].max()
-    rango_s = (t_max - df["tiempo"].min()).total_seconds()
-    # Volume profile: batch 88 non-POC bars into ONE Scatter (was 90 separate traces)
+    # Intervalo de una vela en segundos (para proyectar hacia la derecha)
+    if len(df) > 1:
+        candle_s = (df["tiempo"].iloc[-1] - df["tiempo"].iloc[-2]).total_seconds()
+    else:
+        candle_s = 14400  # default 4H
+    # Extensión máxima a la derecha = 25% del total de velas visibles
+    max_ext_s = candle_s * len(df) * 0.25
+
+    # Volume profile: barras hacia la DERECHA desde la última vela (estilo TradingView)
     x_vp, y_vp = [], []
     for i, v in enumerate(vols):
         if i == poc_idx:
             continue
         pmid = (niveles[i] + niveles[i + 1]) / 2
-        t_ini = t_max - pd.Timedelta(seconds=rango_s * (v / vol_max) * 0.15)
-        x_vp += [t_ini, t_max, None]
+        t_end = t_max + pd.Timedelta(seconds=max_ext_s * (v / vol_max))
+        x_vp += [t_max, t_end, None]
         y_vp += [pmid, pmid, None]
     if x_vp:
         fig.add_trace(go.Scatter(x=x_vp, y=y_vp, mode="lines",
-                                 line=dict(color="rgba(33,150,243,0.22)", width=1),
+                                 line=dict(color="rgba(255,255,255,0.45)", width=1),
                                  showlegend=False, hoverinfo="skip"), row=1, col=1)
-    # POC bar in gold (separate trace for distinct color/width)
+    # POC bar en dorado — más ancha y visible
     poc_pmid = (niveles[poc_idx] + niveles[poc_idx + 1]) / 2
-    poc_tini = t_max - pd.Timedelta(seconds=rango_s * (vols[poc_idx] / vol_max) * 0.15)
-    fig.add_trace(go.Scatter(x=[poc_tini, t_max], y=[poc_pmid, poc_pmid], mode="lines",
+    poc_tend = t_max + pd.Timedelta(seconds=max_ext_s * (vols[poc_idx] / vol_max))
+    fig.add_trace(go.Scatter(x=[t_max, poc_tend], y=[poc_pmid, poc_pmid], mode="lines",
                              line=dict(color="#FFD700", width=3),
                              showlegend=False, hoverinfo="skip"), row=1, col=1)
     fig.add_hline(y=poc, line_dash="dot", line_color="#FFD700", line_width=1, row=1, col=1)
@@ -829,12 +1213,13 @@ def crear_grafico(df, activo="BTC", compacto=False):
               spikecolor="#555", spikethickness=1, spikedash="dot", fixedrange=False)
     yax = dict(**ax, side="right")
     fig.update_layout(
+        uirevision=f"{activo}-{tf}",   # mismo activo+TF = no parpadea al actualizar datos
         template="plotly_dark", paper_bgcolor="#0a0a0f", plot_bgcolor="#0a0a0f",
         margin=dict(l=5, r=65, t=8, b=8),
         legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#a0a8c0", size=11),
                     orientation="h", x=0, y=1.02),
         hovermode="x unified", xaxis_rangeslider_visible=False,
-        dragmode="pan", # arrastrar = mover (como TradingView)
+        dragmode="pan",
         xaxis=dict(**ax), xaxis2=dict(**ax), xaxis3=dict(**ax),
         yaxis=yax, yaxis2=yax, yaxis3=yax,
     )
@@ -1006,7 +1391,7 @@ def _bot_loop(activos_lista, tf, capital_pct):
             if _bot_stop.is_set():
                 break
             try:
-                df = obtener_datos(activo, tf, velas=200)
+                df = obtener_datos(activo, tf, velas=_SR_LOOKBACK.get(tf, 200))
                 if df is None or df.empty:
                     continue
                 score, _ = calcular_score(df)
@@ -1087,6 +1472,44 @@ def _bot_loop(activos_lista, tf, capital_pct):
                         trailing_activo[activo] = False
                         capital_usado[activo] = 0.0
                         _registrar(activo, f"STOP LOSS -{perdida:.1f}%", None)
+                        continue
+
+                # ── CIERRE EN EMA55 — Regla K-2 (Eduardo Andrade) ────────────
+                # Si estamos en SHORT y el precio toca la EMA55 → cerrar siempre.
+                # La EMA55 produce rebote ~90% del tiempo. Sin importar P&L ni distancia.
+                if pos_actual == "short" and precio_entrada[activo]:
+                    ema55_ahora = float(df["EMA55"].iloc[-1])
+                    dist_ema55_pct = abs(precio - ema55_ahora) / ema55_ahora * 100
+                    if dist_ema55_pct <= 0.5:   # precio tocó la EMA55 (dentro del 0.5%)
+                        ep = precio_entrada[activo]
+                        pnl_pct = round((ep - precio) / ep * 100 * apalancamiento_actual, 2)
+                        sgn = "+" if pnl_pct >= 0 else ""
+                        bx.cerrar_posicion(simbolo, "short")
+                        _enviar_telegram(
+                            f"EMA55 EXIT SHORT\n"
+                            f"Par: {simbolo}\n"
+                            f"Entrada: ${ep:,.2f} | Cierre: ${precio:,.2f}\n"
+                            f"P&L: {sgn}{pnl_pct:.1f}% | EMA55: ${ema55_ahora:,.2f}"
+                        )
+                        bot_state = _actualizar_racha(bot_state, pnl_pct / apalancamiento_actual,
+                                                      apalancamiento_actual, bal or 1000)
+                        _registrar_trade({
+                            "timestamp": datetime.now().isoformat(),
+                            "activo": activo,
+                            "side": "short",
+                            "entrada": ep,
+                            "salida": precio,
+                            "pnl_pct": pnl_pct,
+                            "apalancamiento": apalancamiento_actual,
+                            "motivo": "EMA55 EXIT",
+                            "modo": modo,
+                        })
+                        posicion[activo] = precio_entrada[activo] = precio_extremo[activo] = None
+                        trailing_activo[activo] = False
+                        capital_usado[activo] = 0.0
+                        _registrar(activo, f"EMA55 EXIT SHORT {sgn}{pnl_pct:.1f}%", None)
+                        _bot_status["log"].insert(0, f"EMA55 EXIT {activo} {sgn}{pnl_pct:.1f}%")
+                        _bot_status["log"] = _bot_status["log"][:8]
                         continue
 
                 # ── TRAILING STOP ─────────────────────────────────────────────
@@ -1401,7 +1824,13 @@ def _pagina_principal():
                         }, children="5%"),
                     ]),
                     dcc.Slider(id="slider-capital", min=1, max=20, step=1, value=5,
-                               marks={1:"1%", 5:"5%", 10:"10%", 15:"15%", 20:"20%"},
+                               marks={
+                                   1:  {"label": "1%",  "style": {"color": "#ffffff"}},
+                                   5:  {"label": "5%",  "style": {"color": "#ffffff"}},
+                                   10: {"label": "10%", "style": {"color": "#ffffff"}},
+                                   15: {"label": "15%", "style": {"color": "#ffffff"}},
+                                   20: {"label": "20%", "style": {"color": "#ffffff"}},
+                               },
                                tooltip={"placement": "bottom", "always_visible": False}),
                 ]),
                 html.Div(className="separador-dorado"),
@@ -1449,18 +1878,19 @@ def _pagina_principal():
 
             # CENTER: siempre BTC
             html.Div(id="panel-central", children=[
-                _scoring_bar(),
                 html.Div(className="chart-action-bar", children=[
                     html.Span("BTC / USDT", className="chart-asset-label"),
                     html.A("↗ Ver Detalle", href="/detail/BTC", target="_blank",
                            className="btn-detalle"),
                 ]),
                 html.Div(className="grafico-wrap", children=[
-                    dcc.Loading(type="dot", color="#c8a84b", children=[
+                    dcc.Loading(type="dot", color="#c8a84b", delay_show=2000,
+                                style={"height": "calc(100vh - 520px)", "minHeight": "340px"},
+                                children=[
                         dcc.Graph(id="grafico-principal",
                                   config={"displayModeBar": "hover", "scrollZoom": True, "displaylogo": False,
                                           "modeBarButtonsToRemove": ["select2d","lasso2d","toImage","sendDataToCloud"]},
-                                  style={"height": "100%"}),
+                                  style={"height": "calc(100vh - 520px)", "minHeight": "340px"}),
                     ]),
                 ]),
                 html.Div(className="seccion-control", children=[
@@ -1624,6 +2054,20 @@ def _pagina_principal():
                     }),
                 ]),
                 html.Div(className="separador-dorado"),
+                # Toggle Ondas de Elliott
+                html.Div(className="seccion-control", children=[
+                    html.Div(className="seccion-titulo", children="Herramientas"),
+                    dcc.Checklist(
+                        id="toggle-elliott",
+                        options=[{"label": " Ondas Elliott", "value": "on"}],
+                        value=[],
+                        className="checklist-activos",
+                        labelStyle={"display": "flex", "alignItems": "center",
+                                    "gap": "8px", "color": "#ffffff",
+                                    "fontSize": "11px", "cursor": "pointer"},
+                    ),
+                ]),
+                html.Div(className="separador-dorado"),
                 # btn-historial en app.layout (estático) — fix modal auto-open
                 html.Div(id="bot-log", style={
                     "marginTop": "6px", "fontSize": "10px",
@@ -1660,7 +2104,6 @@ def _pagina_detalle(symbol):
                       style={"height": "calc(100vh - 290px)"}),
         ]),
         html.Div(className="detail-bottom", children=[
-            _scoring_bar("d-"),
             html.Div(className="detail-gr-row", children=[
                 _gr_card("SQUEEZE", "Momentum", "d-gr-squeeze-card", "d-gr-squeeze-dot", "d-gr-squeeze-val"),
                 _gr_card("ADX", "Dirección", "d-gr-adx-card", "d-gr-adx-dot", "d-gr-adx-val"),
@@ -1681,7 +2124,6 @@ app.layout = html.Div([
     dcc.Interval(id="tick-relojes", interval=1_000, n_intervals=0),
     dcc.Interval(id="tick-main", interval=30_000, n_intervals=0),
     dcc.Interval(id="tick-bot-status", interval=5_000, n_intervals=0),
-    dcc.Interval(id="tick-senales", interval=5_000, n_intervals=0),
 
     html.Div(id="header-main", children=[
         html.Div(className="logo-area", children=[
@@ -1701,7 +2143,7 @@ app.layout = html.Div([
             _reloj("TOKYO", "TYO"), _reloj("DUBAI", "DXB"),
         ]),
         html.Div(className="idioma-barra", children=[
-            html.Span("IDIOMA", className="idioma-barra-label"),
+            html.Span("IDIOMA", id="lbl-idioma", className="idioma-barra-label"),
             dcc.RadioItems(id="radio-idioma",
                            options=[{"label": x, "value": x.lower()}
                                     for x in ["ES","EN","IT","FR","DE","ZH","KO","JA"]],
@@ -1882,7 +2324,6 @@ def cb_limitar(val):
 
 @app.callback(
     [Output("grafico-principal", "figure"),
-     Output("scoring-bar", "children"),
      Output("gr-squeeze-card", "className"), Output("gr-squeeze-dot", "className"), Output("gr-squeeze-val", "children"),
      Output("gr-adx-card", "className"), Output("gr-adx-dot", "className"), Output("gr-adx-val", "children"),
      Output("gr-ema-card", "className"), Output("gr-ema-dot", "className"), Output("gr-ema-val", "children"),
@@ -1894,9 +2335,9 @@ def cb_limitar(val):
      Output("stat-squeeze", "children"), Output("stat-ema", "children"),
      ],
     [Input("tick-main", "n_intervals"), Input("store-tf", "data")],
-    State("store-idioma", "data"),
+    [State("store-idioma", "data"), State("toggle-elliott", "value")],
 )
-def cb_btc_dashboard(_, tf, idioma):
+def cb_btc_dashboard(_, tf, idioma, elliott_val):
     t = TRANSLATIONS.get(idioma, TRANSLATIONS["es"])
 
     def _fig_err():
@@ -1907,29 +2348,16 @@ def cb_btc_dashboard(_, tf, idioma):
                                         font=dict(color="#6b5520",size=16), x=0.5, y=0.5)])
         return f
 
-    df = obtener_datos("BTC", tf or "4H")
+    tf_actual = tf or "4H"
+    df = obtener_datos("BTC", tf_actual, velas=_SR_LOOKBACK.get(tf_actual, 200))
     if df is None or df.empty:
         off = _gr("off", "-")
-        bar = _scoring_bar_children("–", "sc-numero", t["wait"], {"color":"#a0a8c0"},
-                                      {"width":"50%","background":"#2a2a3a"})
-        return (_fig_err(), bar, *off,*off,*off,*off,*off,*off,
+        return (_fig_err(), *off,*off,*off,*off,*off,*off,
                 "–","–",{"fontSize":"13px","color":"#a0a8c0"},"–","–","–","–")
 
     score, gr = calcular_score(df)
-    fig = crear_grafico(df, "BTC", compacto=True)
-    pct = f"{((score+100)/200)*100:.0f}%"
-
-    if score >= 70:
-        sc_cls, sc_lbl, sc_sty = "sc-numero long", t["long"], {"color":"#00ff88"}
-        sc_bar = {"width":pct,"background":"#00ff88","transition":"width .8s ease"}
-    elif score <= -70:
-        sc_cls, sc_lbl, sc_sty = "sc-numero short", t["short"], {"color":"#ff3355"}
-        sc_bar = {"width":pct,"background":"#ff3355","transition":"width .8s ease"}
-    else:
-        sc_cls, sc_lbl, sc_sty = "sc-numero", t["wait"], {"color":"#a0a8c0"}
-        sc_bar = {"width":pct,"background":"#c8a84b","transition":"width .8s ease"}
-
-    bar = _scoring_bar_children(str(score), sc_cls, sc_lbl, sc_sty, sc_bar)
+    _show_ew = bool(elliott_val)   # [] → False, ["on"] → True
+    fig = crear_grafico(df, "BTC", compacto=True, tf=tf_actual, show_elliott=_show_ew)
 
     u = df.iloc[-1]
     ref = df["close"].iloc[-7] if len(df) >= 7 else df["close"].iloc[0]
@@ -1938,7 +2366,7 @@ def cb_btc_dashboard(_, tf, idioma):
     cclr = "#00ff88" if chg >= 0 else "#ff3355"
 
     return (
-        fig, bar,
+        fig,
         *_gr(gr["SQUEEZE"]["estado"], gr["SQUEEZE"]["valor"]),
         *_gr(gr["ADX"]["estado"], gr["ADX"]["valor"]),
         *_gr(gr["EMA"]["estado"], gr["EMA"]["valor"]),
@@ -1952,13 +2380,50 @@ def cb_btc_dashboard(_, tf, idioma):
         "▲ Alcista" if u["EMA10"] > u["EMA55"] else "▼ Bajista",
     )
 
-def _scoring_bar_children(numero, cls, etiqueta, sty_etq, sty_barra):
+def _scoring_bar_children(numero, cls, etiqueta, sty_etq, sty_barra, activo="BTC"):
+    """
+    Barra de score — diseño limpio sin superposición de texto.
+    Layout: ACTIVO | NÚMERO | SHORT ◄────bar────► LONG | ETIQUETA
+    El número y la etiqueta están FUERA de la barra, sin pisarse.
+    """
+    try:
+        val = int(numero)
+    except Exception:
+        val = 0
+
+    if val >= 70:
+        color = "#00ff88"
+    elif val <= -70:
+        color = "#ff3355"
+    else:
+        color = "#c8a84b"
+
+    abs_pct = min(abs(val), 100) / 2
+    if val < 0:
+        left  = f"{50 - abs_pct:.1f}%"
+        width = f"{abs_pct:.1f}%"
+    else:
+        left  = "50%"
+        width = f"{abs_pct:.1f}%"
+
     return [
-        html.Div(numero, id="sc-numero", className=cls),
-        html.Div(className="sc-barra-wrap", children=[
-            html.Div(id="sc-barra", className="sc-barra", style=sty_barra),
+        # activo — identifica a qué par pertenece el score
+        html.Div(activo, className="sc-activo"),
+        # número grande
+        html.Span(numero, id="sc-numero", className=cls),
+        # etiqueta SHORT fija
+        html.Div("SHORT", className="sc-lado sc-lado-short"),
+        # barra central — sin texto encima
+        html.Div(className="sc-barra-central-wrap", children=[
+            html.Div(className="sc-barra-track"),
+            html.Div(className="sc-barra-centro"),
+            html.Div(className="sc-barra-activa",
+                     style={"left": left, "width": width, "background": color}),
         ]),
-        html.Div(etiqueta, id="sc-etiqueta", className="sc-etiqueta", style=sty_etq),
+        # etiqueta LONG fija
+        html.Div("LONG", className="sc-lado sc-lado-long"),
+        # dirección — CORTO / ESPERAR / LARGO
+        html.Span(etiqueta, id="sc-etiqueta", className="sc-etiqueta", style=sty_etq),
     ]
 
 # ── Grid de activos seleccionados ─────────────────────────────────────────────
@@ -2009,7 +2474,6 @@ def cb_asset_grid(activos, tf, _):
 
 @app.callback(
     [Output("detail-graph", "figure"),
-     Output("d-scoring-bar", "children"),
      Output("d-gr-squeeze-card", "className"), Output("d-gr-squeeze-dot", "className"), Output("d-gr-squeeze-val", "children"),
      Output("d-gr-adx-card", "className"), Output("d-gr-adx-dot", "className"), Output("d-gr-adx-val", "children"),
      Output("d-gr-ema-card", "className"), Output("d-gr-ema-dot", "className"), Output("d-gr-ema-val", "children"),
@@ -2018,41 +2482,30 @@ def cb_asset_grid(activos, tf, _):
      ],
     [Input("detail-tick", "n_intervals"),
      Input("detail-tf-radio", "value")],
-    State("url", "pathname"),
+    [State("url", "pathname"),
+     State("store-idioma", "data"),
+     State("toggle-elliott", "value")],
 )
-def cb_detail(_, tf, pathname):
+def cb_detail(_, tf, pathname, idioma, elliott_val):
     symbol = "BTC"
     if pathname and "/detail/" in pathname:
         symbol = pathname.split("/detail/")[-1].upper()
+    t = TRANSLATIONS.get(idioma or "es", TRANSLATIONS["es"])
 
-    df = obtener_datos(symbol, tf or "4H")
+    tf_actual = tf or "4H"
+    df = obtener_datos(symbol, tf_actual, velas=_SR_LOOKBACK.get(tf_actual, 200))
     if df is None or df.empty:
         off = _gr("off", "-")
-        bar = _scoring_bar_children("–", "sc-numero", "–",
-                                    {"color":"#a0a8c0"},
-                                    {"width":"50%","background":"#2a2a3a"})
         f = go.Figure()
         f.update_layout(paper_bgcolor="#0a0a0f", plot_bgcolor="#0a0a0f")
-        return (f, bar, *off,*off,*off,*off,*off)
+        return (f, *off,*off,*off,*off,*off)
 
     score, gr = calcular_score(df)
-    fig = crear_grafico(df, symbol, compacto=False)
-    pct = f"{((score+100)/200)*100:.0f}%"
-
-    if score >= 70:
-        sc_cls, sc_lbl, sc_sty = "sc-numero long", "LARGO", {"color":"#00ff88"}
-        sc_bar = {"width":pct,"background":"#00ff88","transition":"width .8s ease"}
-    elif score <= -70:
-        sc_cls, sc_lbl, sc_sty = "sc-numero short", "CORTO", {"color":"#ff3355"}
-        sc_bar = {"width":pct,"background":"#ff3355","transition":"width .8s ease"}
-    else:
-        sc_cls, sc_lbl, sc_sty = "sc-numero", "ESPERAR", {"color":"#a0a8c0"}
-        sc_bar = {"width":pct,"background":"#c8a84b","transition":"width .8s ease"}
-
-    bar = _scoring_bar_children(str(score), sc_cls, sc_lbl, sc_sty, sc_bar)
+    _show_ew = bool(elliott_val)
+    fig = crear_grafico(df, symbol, compacto=False, tf=tf_actual, show_elliott=_show_ew)
 
     return (
-        fig, bar,
+        fig,
         *_gr(gr["SQUEEZE"]["estado"], gr["SQUEEZE"]["valor"]),
         *_gr(gr["ADX"]["estado"], gr["ADX"]["valor"]),
         *_gr(gr["EMA"]["estado"], gr["EMA"]["valor"]),
@@ -2425,7 +2878,7 @@ def _stat_pill(label, value, color):
 
 if __name__ == "__main__":
     print("=" * 50)
-    print(" AERO BOT PRO — Elite v3.0")
+    print(" AERO BOT PRO — Elite v3.3")
     print(" MTF v3: 4H predice | 2H confirma | 1W/1D advierten")
     print(" http://localhost:8051")
     print(f" [CHECK] Label activos ES: {TRANSLATIONS['es']['assets']}")

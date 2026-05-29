@@ -4,6 +4,50 @@ Reglas de desarrollo para este proyecto. Seguirlas siempre, sin excepción.
 
 ---
 
+## ⚠️ LEER PRIMERO — PROTOCOLO L99
+
+Existe un segundo documento obligatorio: **`STRATEGY.md`**
+
+Antes de modificar `calcular_score()` o cualquier lógica de indicadores:
+1. Leer `STRATEGY.md` completo
+2. Identificar el escenario afectado en la sección "Escenarios Canónicos"
+3. Verificar que el cambio no rompe los otros 6 escenarios
+4. Actualizar `STRATEGY.md` PRIMERO — código DESPUÉS
+
+**Si `STRATEGY.md` y el código no coinciden → el código está mal.**
+**Si Eduardo corrige al bot → primero `STRATEGY.md`, luego el código.**
+
+---
+
+## ⚠️ PROTOCOLO DE APRENDIZAJE CONTINUO — LEY PERMANENTE
+
+Eduardo transfiere su conocimiento de trader en tiempo real, conforme el mercado se mueve.
+Este conocimiento se acumula en `STRATEGY.md` sección "CONOCIMIENTO DE TRADING DE EDUARDO".
+
+### Reglas que NUNCA se pueden violar:
+
+**NUNCA BORRAR una regla de trading existente.**
+Aunque una regla nueva parezca similar a una vieja, son para contextos distintos.
+Las reglas coexisten — no se reemplazan, no se fusionan, no se simplifican.
+
+**Cuando Eduardo dicta una regla nueva:**
+1. Agregarla a `STRATEGY.md` → sección "CONOCIMIENTO DE TRADING" → nuevo bloque K-N
+2. Incluir el contexto exacto: cuándo aplica, cuándo NO aplica
+3. **Implementar en código INMEDIATAMENTE — en la misma sesión, sin esperar que Eduardo lo pida**
+4. Si el código nuevo requiere un nuevo indicador en `calcular_score()` → agregarlo a la tabla
+5. Marcar el bloque K-N como ✅ implementado en STRATEGY.md y HANDOFF_CLAUDE.md
+
+**⚠️ REGLA DE ORO — NUNCA VIOLAR:**
+Cuando Eduardo enseña un patrón de trading → STRATEGY.md + código en el MISMO mensaje.
+No documentar sin codificar. No codificar sin documentar.
+Eduardo NO debería tener que preguntar "¿ya lo pasaste a código?" — debe ser automático.
+
+**El objetivo final:** el bot razona como Eduardo.
+No ejecuta reglas mecánicas — pondera múltiples señales con los mismos pesos
+que Eduardo usa en su cabeza cuando ve un gráfico.
+
+---
+
 ## Arquitectura
 
 - **`main.py`** — Dashboard Dash (puerto 8051). Toda la UI, callbacks, bot loop y lógica de indicadores.
@@ -215,10 +259,11 @@ El orden correcto de checks dentro de `for activo in activos_lista` es:
 2. _analizar_mtf(activo, ema_comp_pct)  →  mtf dict
 3. Actualizar precio_extremo (incondicional, antes de todo)
 4. STOP LOSS FIJO (si pérdida >= stop_loss_pct%)
-5. TRAILING STOP (si profit >= ts_activacion% y retroceso >= ts_distancia%)
-6. CIERRE COMPRESION EMA (si abs(mtf["4H"]["sep"]) < ema_comp_pct)
-7. CIERRE ZONA WAIT (si -70 < score < 70)
-8. ENTRADA LONG/SHORT — filtrada por mtf["long_ok"] / mtf["short_ok"]
+5. CIERRE EN EMA55 — Regla K-2 (solo SHORT: si precio toca EMA55 → cerrar siempre)
+6. TRAILING STOP (si profit >= ts_activacion% y retroceso >= ts_distancia%)
+7. CIERRE COMPRESION EMA (si abs(mtf["4H"]["sep"]) < ema_comp_pct)
+8. CIERRE ZONA WAIT (si -70 < score < 70)
+9. ENTRADA LONG/SHORT — filtrada por mtf["long_ok"] / mtf["short_ok"]
 ```
 
 ---
@@ -377,6 +422,30 @@ Sin ambas condiciones el panel muestra texto invisible o vacío.
 
 ---
 
+## Reglas de diseño UI — permanentes
+
+### UI-1. Texto de menús y controles SIEMPRE en blanco
+Cualquier label, mark, opción o texto de control en el panel lateral
+(sliders, checkboxes, dropdowns, marks de sliders) debe usar `color: "#ffffff"`.
+
+```python
+# MAL — color oscuro invisible sobre fondo negro
+marks={1: "1%", 5: "5%"}
+
+# BIEN — blanco siempre
+marks={
+    1: {"label": "1%",  "style": {"color": "#ffffff"}},
+    5: {"label": "5%",  "style": {"color": "#ffffff"}},
+}
+```
+
+Razón: el fondo del panel es negro. Colores oscuros o por defecto de Dash
+se mezclan con el fondo y no se leen. El blanco es neutro, limpio y elegante.
+No usar dorado ni otros colores para texto de controles — reservar el dorado
+para títulos de sección y valores numéricos destacados.
+
+---
+
 ## Reglas de operación — esta máquina específica
 
 ### 15. Python en esta máquina se llama `python3.11`
@@ -442,6 +511,84 @@ El LED tiene 3 estados: `desconectado` (rojo), `conectando` (amarillo parpadeo),
 Con Dash 4.x, cuando un componente entra al DOM via callback (layout dinámico), dispara los callbacks que lo tienen como `Input` aunque `prevent_initial_call=True` esté activado.
 Fix aplicado: `btn-historial` en `app.layout` con `position: fixed; bottom: 20px; right: 20px` (botón flotante).
 
+### 21. calcular_score() v3.2 — filosofía anticipatoria
+El bot predice el futuro, no describe el presente. Reglas de diseño del scoring:
+
+**Pesos v3.2 (mayo 2026) — tabla completa:**
+
+| Condición | Puntos | Descripción |
+|---|---|---|
+| `bear_peak` | −40 | Máximo local de squeeze → giro bajista exacto |
+| `bull_valley` | +40 | Mínimo local de squeeze → giro alcista exacto |
+| `bear_post_peak` | −25 | Post-pico: 3 barras declinando, aún positivo |
+| `bull_post_valley` | +25 | Post-fondo: 3 barras subiendo, aún negativo |
+| `bear_accel` | −30 | Squeeze < 0 y acelerando negativo |
+| `bull_accel` | +30 | Squeeze > 0 y acelerando positivo |
+| Positivo creciendo | +10 | Squeeze > 0 y subiendo |
+| **Positivo cayendo** | **−10** | Squeeze > 0 pero perdiendo fuerza = bajista |
+| Negativo subiendo | +10 | Squeeze < 0 pero recuperándose = posible giro |
+| Negativo cayendo | −10 | Squeeze < 0 y siguiendo abajo |
+| `bull_ema_strong` (slope acelerando) | +30 | EMA10 slope acelerando al alza |
+| `bear_ema_strong` (slope acelerando) | −30 | EMA10 slope acelerando a la baja |
+| EMA slope débil | ±8 | EMA reactiva — no debe dominar |
+| S/R resistencia cerca (±1.5%) | −20 | Precio rechazado en resistencia |
+| S/R soporte cerca (±1.5%) | +20 | Precio apoyado en soporte |
+| Cross-confirm (peak + S/R) | ±18 | Squeeze gira EN un nivel clave = bonus |
+| Volume Profile POC | ±10 | Por encima/debajo del POC |
+| ADX emergente (<20 → creciendo) | ±10 | Amplifica dirección dominante |
+| ADX fuerte (≥25, creciendo) | ±5 | Amplifica dirección dominante |
+| ADX < 20 (sin fuerza) | −5 | Penaliza — tendencia débil |
+
+**Regla crítica — ADX es FUERZA, no DIRECCIÓN:**
+```python
+if pts >= 0: pts += adx_bonus   # amplifica bullish
+else:        pts -= adx_bonus   # amplifica bearish
+```
+Nunca `pts += adx_bonus` incondicionalmente — eso anula señales SHORT.
+
+**Regla crítica — Positivo-cayendo NO es alcista:**
+```python
+# v3.1 BUG: elif mom_now > 0: pts += 10  ← daba +10 aunque el squeeze bajara
+# v3.2 FIX:
+elif mom_now > 0 and growing: pts += 10   # creciendo = alcista
+elif mom_now > 0:             pts -= 10   # cayendo = bajista (pierde fuerza)
+```
+
+**Ejemplos validados:**
+- BTC 4H squeeze en techo + resistencia = **score −70 → SHORT** (v3.1)
+  `+8 (EMA) −40 (bear_peak) +10 (POC) −20 (S/R) −18 (cross) −10 (ADX) = −70`
+- BTC 4H post-pico (1-2 barras después) + resistencia = **score ~−42 → SHORT** (v3.2)
+  `+8 (EMA) −25 (post_peak) +10 (POC) −20 (S/R) −5 (ADX) = −32`
+
+### 22. Filosofía de S/R — niveles testeados múltiples veces + breakout (Eduardo Andrade, mayo 2026)
+
+**Reglas dictadas por Eduardo — aprendizaje de mercado real:**
+
+**Soporte testeado múltiples veces:**
+Cuando un nivel de soporte ha sido tocado 2 o más veces y el precio lo respeta, ese nivel es más significativo que un soporte recién formado. La significancia se acumula con cada toque.
+
+**Breakout de soporte = SHORT reforzado:**
+Si el soporte testeado múltiples veces es ROTO hacia abajo (precio cierra por debajo), la caída siguiente tiende a ser más fuerte y sostenida. Esto es más bajista que simplemente "estar cerca de la resistencia."
+→ Implementar: `support_break` en `calcular_score()` = bonus SHORT adicional cuando precio < soporte cercano
+
+**Techo roto = oportunidad LONG:**
+Si el precio rompe con fuerza un techo de resistencia que había bloqueado el avance, abre un pequeño camino alcista. El bot debe reconocer esto y NO seguir en SHORT.
+→ Implementar: `resistance_break` = bonus LONG cuando precio > resistencia cercana (breakout)
+
+**Objetivo de salida de una posición SHORT:**
+La posición ideal dura hasta que el squeeze momentum desarrolle un **valle rojo bien desarrollado** (momentum muy negativo, barras rojas creciendo en tamaño = el impulso bajista alcanza su máximo). Sin embargo, el **trailing stop** es el mecanismo de ejecución — se activa antes si hay ganancia considerable.
+- No esperar el valle perfecto: el trailing stop captura la ganancia cuando el precio rebota desde el fondo
+- La señal visual del valle es para CONFIRMAR que la tesis bajista estuvo correcta, no para cronometrar la salida
+
+**Tabla de eventos S/R v3.3 (a implementar):**
+```
+Precio cerca de resistencia (≤1.5%)     → -20 pts  (rechazo probable)
+Precio cerca de soporte (≤1.5%)         → +20 pts  (rebote probable)
+Precio ROMPE soporte (1.5%–4% debajo)   → -25 pts  (breakout bajista)
+Precio ROMPE resistencia (1.5%–4% encima) → +25 pts (breakout alcista)
+Bonus: nivel testeado 3+ veces          → ±8 pts adicionales (TODO: contar toques)
+```
+
 ### 20. P&L en tiempo real — patrón de cálculo en bot loop
 El P&L se calcula DESPUÉS del bloque de `precio_extremo` y ANTES del Stop Loss, por activo:
 ```python
@@ -459,18 +606,118 @@ else:
 
 ---
 
-## Pendiente (próximas sesiones)
+## Historial completo — todo lo implementado hasta hoy
 
-- [x] Bug visual: slider de capital — RESUELTO (era config.json malformado, mayo 2026)
-- [x] MTF guardarrail — IMPLEMENTADO y ACTUALIZADO a v3 (mayo 2026)
-- [x] Panel señales mini por activo (`panel-senales-mini`) — IMPLEMENTADO y FUNCIONANDO (mayo 2026)
-- [x] BingX data source fix — API keys pasadas correctamente, logging de fallback — IMPLEMENTADO (mayo 2026)
-- [x] AERO BOT PRO v3.0 — `calcular_score()` anticipatorio + `_analizar_mtf()` v3 (4H predice, 2H confirma, 1W/1D penalizan) — IMPLEMENTADO (mayo 2026)
-- [x] Historial de trades — modal implementado con tabla completa y pills de resumen (mayo 2026)
-- [x] LED 3 estados — DESCONECTADO (rojo) → CONECTANDO (amarillo parpadeo) → CONECTADO (verde fijo) — IMPLEMENTADO (mayo 2026)
-- [x] Fix modal auto-open — `btn-historial` movido a `app.layout` estático como botón flotante `position:fixed` bottom-right — RESUELTO (mayo 2026)
-- [x] P&L en tiempo real — cálculo en bot loop + sección "Posicion Abierta" en panel derecho (`pnl-posicion`) — IMPLEMENTADO (mayo 2026)
-- [x] Fix LED CONECTADO falso — `cb_bot_status` usa `store-bot` como fuente de verdad + limpiar `scores/pnl/mtf` al detener — RESUELTO (mayo 2026)
-- [x] Rebalanceo de layout — Idioma a barra de relojes, Balance/P&L/Telegram/Gestión de Racha al panel izquierdo, INICIAR BOT debajo del checklist — IMPLEMENTADO (mayo 2026)
-- [ ] Refactor modular — separar en `ui.py`, `indicators.py`, `exchange/` (main.py supera 2900 líneas)
-- [ ] Migrar VP a TradingView Lightweight Charts (mejor interacción Y-axis)
+### Mayo 2026 — Fundamentos
+- [x] calcular_score() v3.0 — score anticipatorio, MTF guardarrail v3
+- [x] calcular_score() v3.1 — bear_peak ±40, ADX direction-aware, S/R cross-confirm ±18
+- [x] calcular_score() v3.2 — bear_post_peak/bull_post_valley ±25, positivo-cayendo = −10
+- [x] calcular_score() v3.3 — S/R breakout: soporte roto −25, resistencia rota +25
+- [x] _analizar_mtf() v3 — 4H predice, 2H confirma, 1W/1D penalizan (fetch paralelo)
+- [x] BingX data source — API keys a nivel módulo, logging explícito de fallback a Binance
+- [x] Panel señales mini por activo — barra de progreso hacia umbral ±70
+- [x] Historial de trades — modal con tabla completa y pills de resumen
+- [x] LED 3 estados — DESCONECTADO/CONECTANDO/CONECTADO con CSS sibling selector
+- [x] P&L en tiempo real — cálculo en bot loop, sección "Posición Abierta"
+- [x] STRATEGY.md — creado como fuente de verdad L99 con 7 escenarios canónicos
+
+### Mayo 2026 — Fixes
+- [x] Fix lbl-idioma — id faltante, etiqueta no traducía
+- [x] Fix S/R order=5 — sincronizado entre chart y score
+- [x] Fix _analizar_mtf excepción silenciosa — ahora loggea
+- [x] Fix cb_detail hardcoded Spanish — usa State(store-idioma)
+- [x] Fix LED CONECTADO falso — store-bot como fuente de verdad
+- [x] Fix slider capital — config.json malformado
+- [x] Fix btn-historial — movido a app.layout estático
+
+### Mayo 2026 — Sesión 26 mayo (conocimiento de trading Eduardo)
+- [x] Trendlines diagonales — reemplazan horizontales en chart, usan todos los pivots del período
+- [x] _detectar_sr_persistentes() — función compartida chart+score, order=15, tolerancia 1.5%
+- [x] _detectar_trendlines() — regresión lineal por TODOS los pivots, proyección al borde derecho
+- [x] _SR_LOOKBACK — velas según timeframe (4H=280, 1D=160, 1W=55) en todos los fetch
+- [x] STRATEGY.md v5.0 — reglas de visualización actualizadas a trendlines diagonales
+- [x] Cierre SHORT en EMA55 — Regla K-2: si precio toca EMA55 → cerrar siempre (bot loop paso 5)
+- [x] STRATEGY.md — Bloques K-1 a K-7 (conocimiento de trading completo de Eduardo)
+- [x] Protocolo de Aprendizaje Continuo — CLAUDE.md y STRATEGY.md, nunca borrar reglas
+- [x] Slider capital marks en blanco — regla UI-1: menús siempre en color blanco
+- [x] Barra de score ELIMINADA — cambiaba cada 5s, confundía, no aportaba valor visual
+- [x] cb_btc_dashboard y cb_detail — Output("scoring-bar") y Output("d-scoring-bar") eliminados
+- [x] _scoring_bar() y _scoring_bar_children() — funciones eliminadas del código
+
+### Mayo 2026 — Sesión 27 mayo (conocimiento de trading Eduardo)
+- [x] K-8: Último estirón — precio toca resistencia en tendencia bajista → −20 pts bonus SHORT
+      Forma más fuerte: squeeze ya negativo cuando precio toca resistencia (máxima convicción)
+      Implementado en calcular_score() v3.4 — guardarrail S/R muestra prefijo "K8"
+- [x] K-9: Segunda confirmación — EMA cruce bajista (EMA10<EMA55) + squeeze negativo → −15 pts
+      "Ya vamos con más cuidado" (Eduardo). Mutuamente exclusivo con K-8.
+      Implementado en calcular_score() v3.4
+- [x] K-10: Volumen de acumulación en soporte — longs posicionándose + nodo VP en precio actual
+      El volumen revela INTENCIÓN. Acumulación en soporte pesa más que squeeze bajista de TF altos.
+      Documentado en STRATEGY.md. Pendiente de implementar en código.
+- [x] STRATEGY.md reestructurado — 7 partes ordenadas por tema (indicadores, TF, entradas, gestión)
+- [x] Regla de oro: conocimiento de trading = STRATEGY.md + código en el MISMO momento
+
+### Pendiente de implementar (documentado en STRATEGY.md, falta código)
+- [ ] K-4: Cruce de EMAs como señal en calcular_score() — cruce reciente = bonus ±pts
+- [ ] K-5: Ruptura de fractal como confirmación de fuerza — último pivote roto
+- [ ] K-6: Trendline inferior como objetivo de salida — cerrar SHORT al tocar soporte trendline
+- [ ] K-2.3: Re-entrada SHORT después del rebote de EMA55
+- [ ] K-7: Alta convicción 4H+2H (cruce EMA + fractal) como bonus de score
+
+### Mayo 2026 — Sesión 27 mayo (fixes de UI)
+- [x] Anti-parpadeo de gráficos — 3 capas: uirevision + delay_show=2000 + CSS opacity
+- [x] STRATEGY.md reestructurado en 7 partes con índice navegable
+
+### Backlog técnico
+- [ ] Refactor modular — separar en ui.py, indicators.py, exchange/ (main.py ~3000 líneas)
+- [ ] Migrar VP a TradingView Lightweight Charts
+
+---
+
+## Errores de diseño UI — no repetir
+
+### UI-ERR-1: Barra de score que cambia cada 5 segundos
+**Qué pasó:** Se implementó una barra horizontal (SHORT ◄────► LONG) que mostraba
+el score numérico y la etiqueta (CORTO/ESPERAR/LARGO). El score se recalcula cada
+5 segundos con datos de mercado, por lo que la barra cambiaba de valor y color
+constantemente — confundía al usuario y no aportaba información útil.
+
+**Lección:** Un elemento visual que cambia cada 5 segundos no comunica nada.
+O se estabiliza (promedio de N períodos) o se elimina.
+
+**Decisión de Eduardo (26 mayo 2026):** ELIMINAR la barra. No reemplazar.
+Los guardarrailes (SQUEEZE, ADX, EMA, S/R) ya comunican la misma información
+de forma estable y por indicador separado.
+
+```
+❌ NUNCA volver a agregar una barra de score global que se actualice con el tick
+✓ Si se quiere mostrar el score → mostrarlo en el panel de señales mini (ya existe)
+   donde el contexto por activo lo hace más útil
+```
+
+### UI-ERR-2: Texto superpuesto en la barra central
+**Qué pasó:** Se puso el número y la etiqueta como overlay encima de la barra.
+Con score "-50" y etiqueta "ESPERAR", el texto se pisaba visualmente.
+
+**Lección:** Nunca superponer texto sobre una barra de progreso.
+Número a la izquierda, barra en el centro, etiqueta a la derecha — cada uno en su espacio.
+
+### UI-ERR-3: Ensalada de colores
+**Qué pasó (preventivo):** Al añadir color dorado al slider, Eduardo señaló que
+mezclar muchos colores distintos no se ve elegante.
+
+**Regla:** Paleta de colores controlada:
+```
+Texto de controles/menús  → blanco  #ffffff
+Títulos de sección        → dorado  #c8a84b
+Valores numéricos clave   → dorado  #c8a84b o color de estado (verde/rojo)
+Señal LONG                → verde   #00ff88
+Señal SHORT               → rojo    #ff3355
+Neutral/Esperar           → gris    #a0a8c0
+Fondo panels              → negro   #0a0a0f / #0d0d1a
+```
+No inventar colores nuevos. Usar solo los de esta paleta.
+
+### Backlog técnico
+- [ ] Refactor modular — separar en ui.py, indicators.py, exchange/ (main.py ~3000 líneas)
+- [ ] Migrar VP a TradingView Lightweight Charts
