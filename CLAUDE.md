@@ -738,6 +738,7 @@ else:
       _sync_elliott() callback sincroniza UI → real. cb_detail y cb_btc_dashboard leen del real.
 
 ### Backlog técnico
+- [ ] Fix selector de idioma — reportado 30 mayo 2026, diferido para fase final del bot
 - [ ] Refactor modular — separar en ui.py, indicators.py, exchange/ (main.py ~3000 líneas)
 - [ ] Migrar VP a TradingView Lightweight Charts
 
