@@ -100,24 +100,48 @@ tr_s = tr.ewm(alpha=a, adjust=False).mean()
 ### 4. Constantes del linreg fuera de funciones
 `_LR_X`, `_LR_XVAR`, `_LR_XEND` y `_linreg_last` son constantes que dependen solo de `kl=20`. Están definidas a nivel módulo. Nunca moverlas dentro de `obtener_datos()`.
 
-### 5. Volume Profile: máximo 2 trazas Plotly
-El VP tiene 90 bins. Se renderizan con **2 trazas** usando separadores `None`, no 90 trazas individuales:
-- Traza 1: todos los bins no-POC concatenados con `None` entre cada segmento
-- Traza 2: solo el bin POC en dorado
+### 5. Volume Profile: mínimas trazas Plotly — nunca 90
+El VP tiene 90 bins. Se agrupan en **buckets de color** con separadores `None` — jamás 90 trazas individuales.
+
+**Implementación actual (mayo 2026):** gradiente azul + POC dorado = máximo 6 trazas.
+- 5 trazas: bins no-POC agrupados por intensidad de volumen (0–20%, 20–40%, 40–60%, 60–80%, 80–100%)
+- 1 traza: bin POC en dorado `#FFD700`
+
+**Posición del panel VP:**
+- Panel fijo al **muro derecho**: barras terminan en `t_wall = t_max + candle_s + max_ext_s`
+- Barras con **cara izquierda**: cada barra va de `t_wall - bar_width` a `t_wall` (estilo TradingView)
+- Ancho máximo proporcional: `max_ext_s = candle_s * len(df) * 0.20` (20% del chart)
+- Eje X fijado explícitamente: `fig.update_xaxes(range=[t_left, t_wall])` — VP pegado al eje de precios
 
 ```python
 # MAL — 90 fig.add_trace() en un loop
 for i, v in enumerate(vols):
     fig.add_trace(go.Scatter(...))
 
-# BIEN — 2 trazas totales
-x_vp, y_vp = [], []
+# BIEN — buckets de color (≤6 trazas), cara izquierda, muro derecho
+def _vp_color(ratio):
+    if ratio >= 0.80: return "rgba(21,  101, 192, 0.95)"   # azul oscuro intenso
+    if ratio >= 0.60: return "rgba(33,  150, 243, 0.88)"   # azul fuerte
+    if ratio >= 0.40: return "rgba(66,  165, 245, 0.78)"   # azul medio
+    if ratio >= 0.20: return "rgba(100, 181, 246, 0.68)"   # azul cielo
+    return                   "rgba(144, 202, 249, 0.55)"   # azul cielo muy claro
+
+_vp_buckets = {}
 for i, v in enumerate(vols):
     if i == poc_idx: continue
-    x_vp += [t_ini, t_max, None]
-    y_vp += [pmid, pmid, None]
-fig.add_trace(go.Scatter(x=x_vp, y=y_vp, ...))   # traza 1
-fig.add_trace(go.Scatter(x=[poc_tini, t_max], ...)) # traza 2
+    t_start = t_wall - pd.Timedelta(seconds=max_ext_s * (v / vol_max))
+    col = _vp_color(v / vol_max)
+    if col not in _vp_buckets: _vp_buckets[col] = ([], [])
+    _vp_buckets[col][0].extend([t_start, t_wall, None])
+    _vp_buckets[col][1].extend([pmid, pmid, None])
+for col, (xb, yb) in _vp_buckets.items():
+    fig.add_trace(go.Scatter(x=xb, y=yb, mode="lines",
+                             line=dict(color=col, width=1), ...), row=1, col=1)
+# POC dorado
+fig.add_trace(go.Scatter(x=[poc_tstart, t_wall], y=[poc_pmid, poc_pmid],
+                         line=dict(color="#FFD700", width=3), ...), row=1, col=1)
+# Fijar borde derecho del eje
+fig.update_xaxes(range=[t_left, t_wall])
 ```
 
 ### 6. Nunca usar time.sleep() dentro de callbacks Dash
@@ -667,6 +691,15 @@ else:
 ### Mayo 2026 — Sesión 27 mayo (fixes de UI)
 - [x] Anti-parpadeo de gráficos — 3 capas: uirevision + delay_show=2000 + CSS opacity
 - [x] STRATEGY.md reestructurado en 7 partes con índice navegable
+
+### Mayo 2026 — Sesión 30 mayo (Volume Profile rediseño completo)
+- [x] VP cara izquierda — barras se extienden hacia la izquierda desde `t_wall` (era hacia la derecha)
+- [x] VP muro derecho — panel fijo en `t_max + candle_s + max_ext_s`, separado de las velas
+- [x] VP ancho proporcional — `max_ext_s = candle_s * len(df) * 0.20` (20% del chart, restaura tamaño)
+- [x] VP eje X fijado — `fig.update_xaxes(range=[t_left, t_wall])` pega el panel al eje de precios
+- [x] VP gradiente azul — 5 buckets de color por intensidad de volumen + POC dorado (6 trazas total)
+      Alto volumen (80–100%) = `rgba(21,101,192)` azul oscuro intenso
+      Bajo volumen  (0–20%)  = `rgba(144,202,249)` azul cielo muy claro
 
 ### Backlog técnico
 - [ ] Refactor modular — separar en ui.py, indicators.py, exchange/ (main.py ~3000 líneas)
