@@ -1,0 +1,11 @@
+{
+  "racha_ganadora": 0,
+  "apalancamiento_actual": 2,
+  "profit_lock_acumulado": 0.0,
+  "ultimo_trade_resultado": "perdedor",
+  "ultimo_trade_timestamp": "2026-05-26T20:04:41.414845",
+  "perdidas_consecutivas_nivel_actual": 1,
+  "cooldown_hasta": null,
+  "ciclo_inicio": "2026-05-26T20:02:10.289744",
+  "version": "aero-ladder-v2"
+}

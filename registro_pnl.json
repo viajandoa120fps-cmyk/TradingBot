@@ -1,0 +1,126 @@
+{
+  "cuenta": "BingX — Eduardo Andrade",
+  "inicio_seguimiento": "2026-05-27",
+  "balance_inicial_estimado": 65.50,
+  "balance_actual": 57.92,
+  "moneda": "USDT",
+
+  "operaciones_cerradas": [
+    {
+      "id": "R1",
+      "nombre": "Rafaga #1 — BTC LONG",
+      "fecha_apertura": "2026-05-27",
+      "fecha_cierre": "2026-05-29",
+      "activo": "BTC/USDT",
+      "tipo": "LONG",
+      "entradas": [
+        {"precio": 73401.7, "btc": 0.0014},
+        {"precio": 73101.3, "btc": 0.0021},
+        {"precio": 72800.9, "btc": 0.0021}
+      ],
+      "salida_promedio": 73294.0,
+      "pnl_usdt": 0.8953,
+      "fees_usdt": -0.25,
+      "pnl_neto": 0.8953,
+      "resultado": "GANADA",
+      "motivo_cierre": "TP manual",
+      "leccion": "No apretar SL cuando Squeeze sigue alcista"
+    },
+    {
+      "id": "R2",
+      "nombre": "Rafaga #2 — BTC LONG (5 entradas)",
+      "fecha_apertura": "2026-05-29",
+      "fecha_cierre": "2026-05-29",
+      "activo": "BTC/USDT",
+      "tipo": "LONG",
+      "entradas": [
+        {"label": "E1", "precio": 73751.6, "btc": 0.0019, "sl": 72500},
+        {"label": "E2", "precio": 73104.2, "btc": 0.0019, "sl": 72500},
+        {"label": "E3", "precio": 72936.2, "btc": 0.0019, "sl": 72500},
+        {"label": "E4", "precio": 72768.2, "btc": 0.0019, "sl": 72500},
+        {"label": "E5", "precio": 72600.2, "btc": 0.0019, "sl": 72500}
+      ],
+      "salidas": [
+        {"label": "E1", "precio": 72506.0, "pnl": -2.37},
+        {"label": "E2", "precio": 72500.0, "pnl": -1.15},
+        {"label": "E3", "precio": 72500.0, "pnl": -0.83},
+        {"label": "E4", "precio": 72500.0, "pnl": -0.51},
+        {"label": "E5", "precio": 72508.9, "pnl": -0.17}
+      ],
+      "pnl_bruto": -5.03,
+      "fees_usdt": -0.53,
+      "pnl_neto": -5.56,
+      "resultado": "PERDIDA",
+      "motivo_cierre": "Stop Hunt — 5 SLs tocados en el mismo minuto a $72,500",
+      "leccion": "El mercado barrió todos los SLs en minutos, luego rebotó. Clásico stop hunt antes de subida."
+    }
+  ],
+
+  "operaciones_abiertas": [
+    {
+      "id": "A1",
+      "nombre": "Plata — Eduardo manual",
+      "fecha_apertura": "2026-05-28",
+      "activo": "NCCOXAG2USD/USDT",
+      "tipo": "LONG",
+      "contratos": 1.7961,
+      "precio_entrada": 76.14,
+      "precio_actual": 75.42,
+      "apalancamiento": 3,
+      "margen_usdt": 45.59,
+      "liquidacion": 51.81,
+      "pnl_no_realizado": -1.28,
+      "pnl_realizado_parcial": -1.79,
+      "sl": null,
+      "tp": null,
+      "tesis": "Plata alcista — déficit estructural, demanda industrial, ratio oro/plata alto"
+    },
+    {
+      "id": "A2",
+      "nombre": "BTC — Eduardo manual",
+      "fecha_apertura": "2026-05-29",
+      "activo": "BTC/USDT",
+      "tipo": "LONG",
+      "btc": 0.0017,
+      "precio_entrada": 73988.0,
+      "precio_actual": 73608.9,
+      "apalancamiento": 50,
+      "margen_usdt": 2.52,
+      "liquidacion": 72850.8,
+      "pnl_no_realizado": -0.64,
+      "sl": null,
+      "tp": 76000.0,
+      "nota": "Posicion pequeña, riesgo aceptado conscientemente"
+    },
+    {
+      "id": "A3",
+      "nombre": "SOL — Eduardo manual",
+      "fecha_apertura": "2026-05-30",
+      "activo": "SOL/USDT",
+      "tipo": "LONG",
+      "contratos": 1.0,
+      "precio_entrada": 81.592,
+      "precio_actual": 82.32,
+      "apalancamiento": 8,
+      "margen_usdt": 10.20,
+      "liquidacion": 71.786,
+      "pnl_no_realizado": 0.73,
+      "sl": null,
+      "tp": null
+    }
+  ],
+
+  "resumen_mes_mayo_2026": {
+    "operaciones_cerradas": 2,
+    "ganadas": 1,
+    "perdidas": 1,
+    "win_rate_pct": 50.0,
+    "pnl_cerrado_total": -4.66,
+    "pnl_flotante_total": -1.19,
+    "pnl_total_incluyendo_flotante": -5.85,
+    "fees_total_estimado": -0.78,
+    "veredicto": "PENDIENTE — mes en curso"
+  },
+
+  "ultima_actualizacion": "2026-05-30"
+}

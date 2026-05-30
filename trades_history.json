@@ -1,0 +1,13 @@
+[
+  {
+    "timestamp": "2026-05-26T20:04:41.414845",
+    "activo": "SUI",
+    "side": "short",
+    "entrada": 1.0105,
+    "salida": 1.0115,
+    "pnl_pct": -0.1,
+    "apalancamiento": 2,
+    "motivo": "ZONA NEUTRAL",
+    "modo": "demo"
+  }
+]

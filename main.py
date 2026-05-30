@@ -1161,22 +1161,25 @@ def crear_grafico(df, activo="BTC", compacto=False, tf="4H", show_elliott=False)
                 )
 
     t_max = df["tiempo"].max()
-    # Intervalo de una vela en segundos (para proyectar hacia la derecha)
+    # Intervalo de una vela en segundos
     if len(df) > 1:
         candle_s = (df["tiempo"].iloc[-1] - df["tiempo"].iloc[-2]).total_seconds()
     else:
         candle_s = 14400  # default 4H
-    # Extensión máxima a la derecha = 25% del total de velas visibles
-    max_ext_s = candle_s * len(df) * 0.25
+    # Muro derecho: 7 velas al futuro de la última vela (zona libre a la derecha)
+    t_wall = t_max + pd.Timedelta(seconds=candle_s * 7)
+    # Ancho máximo del panel VP: 6 velas (cabe en el espacio derecho, no invade las velas)
+    max_ext_s = candle_s * 6
 
-    # Volume profile: barras hacia la DERECHA desde la última vela (estilo TradingView)
+    # Volume profile: panel fijo al MURO DERECHO, barras con cara hacia la IZQUIERDA (estilo TradingView)
+    # Cada barra TERMINA en t_wall (el muro) y se extiende a la izquierda según su volumen
     x_vp, y_vp = [], []
     for i, v in enumerate(vols):
         if i == poc_idx:
             continue
         pmid = (niveles[i] + niveles[i + 1]) / 2
-        t_end = t_max + pd.Timedelta(seconds=max_ext_s * (v / vol_max))
-        x_vp += [t_max, t_end, None]
+        t_start = t_wall - pd.Timedelta(seconds=max_ext_s * (v / vol_max))
+        x_vp += [t_start, t_wall, None]
         y_vp += [pmid, pmid, None]
     if x_vp:
         fig.add_trace(go.Scatter(x=x_vp, y=y_vp, mode="lines",
@@ -1184,8 +1187,8 @@ def crear_grafico(df, activo="BTC", compacto=False, tf="4H", show_elliott=False)
                                  showlegend=False, hoverinfo="skip"), row=1, col=1)
     # POC bar en dorado — más ancha y visible
     poc_pmid = (niveles[poc_idx] + niveles[poc_idx + 1]) / 2
-    poc_tend = t_max + pd.Timedelta(seconds=max_ext_s * (vols[poc_idx] / vol_max))
-    fig.add_trace(go.Scatter(x=[t_max, poc_tend], y=[poc_pmid, poc_pmid], mode="lines",
+    poc_tstart = t_wall - pd.Timedelta(seconds=max_ext_s * (vols[poc_idx] / vol_max))
+    fig.add_trace(go.Scatter(x=[poc_tstart, t_wall], y=[poc_pmid, poc_pmid], mode="lines",
                              line=dict(color="#FFD700", width=3),
                              showlegend=False, hoverinfo="skip"), row=1, col=1)
     fig.add_hline(y=poc, line_dash="dot", line_color="#FFD700", line_width=1, row=1, col=1)
