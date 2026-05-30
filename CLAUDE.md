@@ -535,6 +535,39 @@ El LED tiene 3 estados: `desconectado` (rojo), `conectando` (amarillo parpadeo),
 Con Dash 4.x, cuando un componente entra al DOM via callback (layout dinámico), dispara los callbacks que lo tienen como `Input` aunque `prevent_initial_call=True` esté activado.
 Fix aplicado: `btn-historial` en `app.layout` con `position: fixed; bottom: 20px; right: 20px` (botón flotante).
 
+### 20. Componentes usados como State en callbacks multi-página — SIEMPRE en app.layout
+**Síntoma:** Un callback que funciona en la página principal no funciona en la página de detalle (pestaña nueva). La página se queda en blanco o el callback nunca se dispara.
+
+**Causa:** El callback tiene un `State("componente-x", "value")` pero `componente-x` solo existe en `_pagina_principal()` (layout dinámico). Cuando se abre la página de detalle en una pestaña nueva, `_pagina_principal()` nunca se renderiza → el componente no existe en el DOM → Dash no puede leer su State → el callback falla silenciosamente.
+
+**Regla:** Todo componente referenciado como `State` o `Input` por un callback que puede correr en CUALQUIER página (no solo la principal) DEBE vivir en `app.layout` (estático).
+
+**Patrón aplicado a `toggle-elliott` (mayo 2026):**
+```
+PROBLEMA: toggle-elliott en _pagina_principal() → cb_detail falla en pestaña nueva
+
+SOLUCIÓN en 3 pasos:
+1. app.layout    → toggle-elliott  (id real, display:none — siempre en DOM)
+2. _pagina_principal() → toggle-elliott-ui (id visual, el checkbox que ve el usuario)
+3. Nuevo callback _sync_elliott():  toggle-elliott-ui → toggle-elliott (copia el valor)
+```
+
+```python
+# app.layout — componente real, siempre presente, invisible
+dcc.Checklist(id="toggle-elliott", options=[...], value=[], style={"display": "none"}),
+
+# _pagina_principal() — UI visible, ID diferente
+dcc.Checklist(id="toggle-elliott-ui", options=[...], value=[], ...),
+
+# Callback de sincronización
+@app.callback(Output("toggle-elliott", "value"), Input("toggle-elliott-ui", "value"),
+              prevent_initial_call=True)
+def _sync_elliott(val): return val or []
+```
+
+**Verificar SIEMPRE antes de agregar un State a un callback multi-página:**
+¿Ese componente está en `app.layout`? Si no → moverlo o aplicar el patrón UI/real + sync.
+
 ### 21. calcular_score() v3.2 — filosofía anticipatoria
 El bot predice el futuro, no describe el presente. Reglas de diseño del scoring:
 
@@ -700,6 +733,9 @@ else:
 - [x] VP gradiente azul — 5 buckets de color por intensidad de volumen + POC dorado (6 trazas total)
       Alto volumen (80–100%) = `rgba(21,101,192)` azul oscuro intenso
       Bajo volumen  (0–20%)  = `rgba(144,202,249)` azul cielo muy claro
+- [x] Fix VER DETALLE (pestaña nueva en blanco) — regla #20: toggle-elliott movido a app.layout
+      toggle-elliott (real, display:none) en app.layout + toggle-elliott-ui (visual) en sidebar
+      _sync_elliott() callback sincroniza UI → real. cb_detail y cb_btc_dashboard leen del real.
 
 ### Backlog técnico
 - [ ] Refactor modular — separar en ui.py, indicators.py, exchange/ (main.py ~3000 líneas)

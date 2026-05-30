@@ -1166,25 +1166,37 @@ def crear_grafico(df, activo="BTC", compacto=False, tf="4H", show_elliott=False)
         candle_s = (df["tiempo"].iloc[-1] - df["tiempo"].iloc[-2]).total_seconds()
     else:
         candle_s = 14400  # default 4H
-    # Muro derecho: 7 velas al futuro de la última vela (zona libre a la derecha)
-    t_wall = t_max + pd.Timedelta(seconds=candle_s * 7)
-    # Ancho máximo del panel VP: 6 velas (cabe en el espacio derecho, no invade las velas)
-    max_ext_s = candle_s * 6
+    # Ancho máximo del panel VP: 20% del total de velas (proporcional al chart, barras visibles)
+    max_ext_s = candle_s * len(df) * 0.20
+    # Muro derecho: 1 vela de separación + el ancho máximo → queda exactamente en el borde del eje
+    t_wall = t_max + pd.Timedelta(seconds=candle_s + max_ext_s)
 
-    # Volume profile: panel fijo al MURO DERECHO, barras con cara hacia la IZQUIERDA (estilo TradingView)
-    # Cada barra TERMINA en t_wall (el muro) y se extiende a la izquierda según su volumen
-    x_vp, y_vp = [], []
+    # Volume profile: gradiente azul — más volumen = azul más intenso, menos = azul cielo
+    # 5 buckets de color agrupados en sus trazas (mucho mejor que 90 trazas individuales)
+    def _vp_color(ratio):
+        if ratio >= 0.80: return "rgba(21,  101, 192, 0.95)"   # azul oscuro intenso
+        if ratio >= 0.60: return "rgba(33,  150, 243, 0.88)"   # azul fuerte
+        if ratio >= 0.40: return "rgba(66,  165, 245, 0.78)"   # azul medio
+        if ratio >= 0.20: return "rgba(100, 181, 246, 0.68)"   # azul cielo
+        return                   "rgba(144, 202, 249, 0.55)"   # azul cielo muy claro
+
+    _vp_buckets: dict = {}
     for i, v in enumerate(vols):
         if i == poc_idx:
             continue
         pmid = (niveles[i] + niveles[i + 1]) / 2
         t_start = t_wall - pd.Timedelta(seconds=max_ext_s * (v / vol_max))
-        x_vp += [t_start, t_wall, None]
-        y_vp += [pmid, pmid, None]
-    if x_vp:
-        fig.add_trace(go.Scatter(x=x_vp, y=y_vp, mode="lines",
-                                 line=dict(color="rgba(255,255,255,0.45)", width=1),
+        col = _vp_color(v / vol_max)
+        if col not in _vp_buckets:
+            _vp_buckets[col] = ([], [])
+        _vp_buckets[col][0].extend([t_start, t_wall, None])
+        _vp_buckets[col][1].extend([pmid, pmid, None])
+
+    for col, (xb, yb) in _vp_buckets.items():
+        fig.add_trace(go.Scatter(x=xb, y=yb, mode="lines",
+                                 line=dict(color=col, width=1),
                                  showlegend=False, hoverinfo="skip"), row=1, col=1)
+
     # POC bar en dorado — más ancha y visible
     poc_pmid = (niveles[poc_idx] + niveles[poc_idx + 1]) / 2
     poc_tstart = t_wall - pd.Timedelta(seconds=max_ext_s * (vols[poc_idx] / vol_max))
@@ -1192,6 +1204,11 @@ def crear_grafico(df, activo="BTC", compacto=False, tf="4H", show_elliott=False)
                              line=dict(color="#FFD700", width=3),
                              showlegend=False, hoverinfo="skip"), row=1, col=1)
     fig.add_hline(y=poc, line_dash="dot", line_color="#FFD700", line_width=1, row=1, col=1)
+
+    # Fijar el borde derecho del eje X = t_wall → VP pegado al eje de precios
+    # Con shared_xaxes=True esto sincroniza los 3 subplots automáticamente
+    _t_left = df["tiempo"].iloc[0] - pd.Timedelta(seconds=candle_s * 2)
+    fig.update_xaxes(range=[_t_left, t_wall])
 
     colores_m = []
     for i in range(len(df)):
@@ -2060,8 +2077,9 @@ def _pagina_principal():
                 # Toggle Ondas de Elliott
                 html.Div(className="seccion-control", children=[
                     html.Div(className="seccion-titulo", children="Herramientas"),
+                    # toggle-elliott-ui: el visible en sidebar — sincroniza al estático via callback
                     dcc.Checklist(
-                        id="toggle-elliott",
+                        id="toggle-elliott-ui",
                         options=[{"label": " Ondas Elliott", "value": "on"}],
                         value=[],
                         className="checklist-activos",
@@ -2171,6 +2189,15 @@ app.layout = html.Div([
                     "border": "1px solid #f0c040", "borderRadius": "4px",
                     "cursor": "pointer", "boxShadow": "0 0 12px rgba(240,192,64,0.15)",
                 }),
+
+    # ── TOGGLE ELLIOTT — estático para que cb_detail funcione en pestaña nueva (regla #19) ──
+    # El checklist visible está en _pagina_principal(); este es el componente real que usan los callbacks.
+    dcc.Checklist(
+        id="toggle-elliott",
+        options=[{"label": " Ondas Elliott", "value": "on"}],
+        value=[],
+        style={"display": "none"},   # oculto — la UI visible está en el sidebar (id diferente: toggle-elliott-ui)
+    ),
 
     # ── MODAL HISTORIAL DE TRADES (siempre en DOM, visible/oculto por callback) ──
     html.Div(id="modal-historial", style={"display": "none"}, children=[
@@ -2324,6 +2351,17 @@ def cb_limitar(val):
     return val or []
 
 # ── Gráfico principal BTC (siempre) ──────────────────────────────────────────
+
+# Sincroniza el toggle visual (sidebar) → toggle estático (app.layout)
+# Necesario porque toggle-elliott vive en app.layout para que cb_detail funcione en pestaña nueva
+@app.callback(
+    Output("toggle-elliott", "value"),
+    Input("toggle-elliott-ui", "value"),
+    prevent_initial_call=True,
+)
+def _sync_elliott(val):
+    return val or []
+
 
 @app.callback(
     [Output("grafico-principal", "figure"),
